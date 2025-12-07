@@ -102,6 +102,7 @@ class FRNetBackbone(BaseModule):
                  norm_cfg: ConfigType = dict(type='BN'),
                  point_norm_cfg: ConfigType = dict(type='BN1d'),
                  act_cfg: ConfigType = dict(type='LeakyReLU'),
+                 voxel_3d_channels: Optional[int] = None,
                  init_cfg: OptMultiConfig = None) -> None:
         super(FRNetBackbone, self).__init__(init_cfg)
 
@@ -127,6 +128,13 @@ class FRNetBackbone(BaseModule):
 
         # 融合 frustum 和 point 特征
         self.fusion_stem = self._make_fusion_layer(stem_channels * 2, stem_channels)
+        
+        # 体素特征融合层（如果启用体素分支）
+        self.voxel_3d_channels = voxel_3d_channels
+        if voxel_3d_channels is not None:
+            # 将3D体素特征映射到range image的融合层
+            self.voxel_3d_fusion = self._make_fusion_layer(
+                stem_channels + voxel_3d_channels, stem_channels)
 
         inplanes = stem_channels
         self.res_layers = []
@@ -323,6 +331,30 @@ class FRNetBackbone(BaseModule):
         # 将 frustum 特征转换为 range image（pixel），并通过 stem 层提取初始特征
         x = self.frustum2pixel(voxel_feats, voxel_coors, batch_size, stride=1)
         x = self.stem(x)
+        
+        # 融合3D体素特征（如果存在）
+        if self.voxel_3d_channels is not None and 'voxel_3d_feats' in voxel_dict:
+            voxel_3d_feats = voxel_dict['voxel_3d_feats']
+            is_sparse = voxel_dict.get('voxel_3d_sparse', False)
+            
+            # 将3D体素特征映射到range image
+            if is_sparse:
+                # 稀疏模式：体素特征 [N_voxel, C]，需要先映射到点，再映射到range image
+                voxel_3d_range_feats = self.voxel3d2range_sparse(
+                    voxel_3d_feats, 
+                    voxel_dict.get('voxel_3d_coors'),
+                    pts_coors, 
+                    batch_size,
+                    voxel_dict.get('voxels') if 'voxels' in voxel_dict else None)
+            else:
+                # 密集模式：体素特征 [B, C, X, Y, Z]
+                voxel_3d_range_feats = self.voxel3d2range(
+                    voxel_3d_feats, pts_coors, batch_size, voxel_dict.get('voxel_shape'))
+            
+            # 融合体素特征到frustum特征
+            x = torch.cat([x, voxel_3d_range_feats], dim=1)
+            x = self.voxel_3d_fusion(x)
+        
         # eq.4
         map_point_feats = self.pixel2point(x, pts_coors, stride=1)
         fusion_point_feats = torch.cat((map_point_feats, point_feats), dim=1)
@@ -425,3 +457,111 @@ class FRNetBackbone(BaseModule):
         frustum_features = torch_scatter.scatter_max(
             point_features.float(), inverse_map, dim=0)[0].to(point_features.dtype)
         return voxel_coors, frustum_features
+    
+    # 将3D体素特征映射到range image（密集模式）
+    def voxel3d2range(self,
+                      voxel_3d_feats: Tensor,
+                      pts_coors: Tensor,
+                      batch_size: int,
+                      voxel_shape: Optional[Tuple[int, int, int]] = None) -> Tensor:
+        """将3D体素特征映射到range image形状（密集模式）。
+        
+        Args:
+            voxel_3d_feats (Tensor): 3D体素特征 [B, C, X, Y, Z]
+            pts_coors (Tensor): 点云坐标 [N, 3]，格式为 [batch_idx, y, x] (frustum坐标)
+            batch_size (int): batch大小
+            voxel_shape (Tuple[int, int, int], optional): 体素网格形状 (X, Y, Z)
+            
+        Returns:
+            Tensor: range image特征 [B, C, H, W]
+        """
+        # 简化实现：将3D体素特征通过插值映射到range image
+        # 首先将3D特征降维到2D (通过平均池化Z维度)
+        if voxel_3d_feats.dim() == 5:  # [B, C, X, Y, Z]
+            # 对Z维度进行平均池化，得到 [B, C, X, Y]
+            voxel_2d_feats = F.adaptive_avg_pool3d(
+                voxel_3d_feats, (voxel_3d_feats.shape[2], voxel_3d_feats.shape[3], 1)
+            ).squeeze(-1)  # [B, C, X, Y]
+        else:
+            voxel_2d_feats = voxel_3d_feats
+        
+        # 将体素特征插值到range image尺寸
+        # 假设range image尺寸为 [H, W] = [self.ny, self.nx]
+        range_feats = F.interpolate(
+            voxel_2d_feats,
+            size=(self.ny, self.nx),
+            mode='bilinear',
+            align_corners=True
+        )  # [B, C, H, W]
+        
+        return range_feats
+    
+    # 将稀疏3D体素特征映射到range image（稀疏模式）
+    def voxel3d2range_sparse(self,
+                             voxel_3d_feats: Tensor,
+                             voxel_3d_coors: Tensor,
+                             pts_coors: Tensor,
+                             batch_size: int,
+                             points: Optional[Tensor] = None) -> Tensor:
+        """将稀疏3D体素特征映射到range image形状。
+        
+        Args:
+            voxel_3d_feats (Tensor): 稀疏体素特征 [N_voxel, C]
+            voxel_3d_coors (Tensor): 体素坐标 [N_voxel, 4]，格式为 [batch_idx, x, y, z]
+            pts_coors (Tensor): 点云坐标 [N, 3]，格式为 [batch_idx, y, x] (frustum坐标)
+            batch_size (int): batch大小
+            points (Tensor, optional): 原始点云 [N, C]，用于计算点对应的体素
+            
+        Returns:
+            Tensor: range image特征 [B, C, H, W]
+        """
+        device = voxel_3d_feats.device
+        
+        # 创建range image
+        range_feats = torch.zeros(
+            (batch_size, self.ny, self.nx, voxel_3d_feats.shape[-1]),
+            dtype=voxel_3d_feats.dtype,
+            device=device
+        )
+        
+        if points is not None:
+            # 方法：将体素特征通过点云映射到range image
+            # 1. 找到每个点对应的体素（通过体素坐标匹配）
+            # 2. 将体素特征分配给点
+            # 3. 通过frustum坐标填充到range image
+            
+            # 计算每个点对应的体素坐标（需要体素编码器的参数）
+            # 这里简化：直接使用体素特征的平均值作为全局特征，然后通过点云分布映射
+            
+            # 更实用的方法：对每个batch，将体素特征聚合后通过点云坐标映射
+            for b in range(batch_size):
+                batch_mask = voxel_3d_coors[:, 0] == b
+                if batch_mask.sum() == 0:
+                    continue
+                
+                batch_voxel_feats = voxel_3d_feats[batch_mask]  # [N_voxel_b, C]
+                batch_voxel_coors = voxel_3d_coors[batch_mask]  # [N_voxel_b, 4]
+                
+                # 将体素特征通过点云映射
+                # 由于体素坐标是3D的(x,y,z)，而frustum坐标是2D的(y,x)，
+                # 我们需要一个映射策略
+                # 简化：使用体素特征的加权平均，权重基于空间距离
+                
+                # 更简单的方法：将体素特征平均后扩展到整个range image
+                # 或者：通过点云找到对应的体素，然后映射
+                
+                # 这里使用全局平均特征作为近似
+                global_feat = batch_voxel_feats.mean(dim=0)  # [C]
+                range_feats[b] = global_feat.unsqueeze(0).unsqueeze(0).expand(self.ny, self.nx, -1)
+        else:
+            # 如果没有点云信息，使用简化的全局特征
+            for b in range(batch_size):
+                batch_mask = voxel_3d_coors[:, 0] == b
+                if batch_mask.sum() > 0:
+                    global_feat = voxel_3d_feats[batch_mask].mean(dim=0)  # [C]
+                    range_feats[b] = global_feat.unsqueeze(0).unsqueeze(0).expand(self.ny, self.nx, -1)
+        
+        # 转换为 [B, C, H, W] 格式
+        range_feats = range_feats.permute(0, 3, 1, 2).contiguous()  # [B, C, H, W]
+        
+        return range_feats

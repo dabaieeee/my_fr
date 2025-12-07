@@ -45,6 +45,7 @@ class FRNet(EncoderDecoder3D):
                  train_cfg: OptConfigType = None,
                  test_cfg: OptConfigType = None,
                  data_preprocessor: OptConfigType = None,
+                 voxel_3d_encoder: OptConfigType = None,
                  init_cfg: OptMultiConfig = None) -> None:
         super(FRNet, self).__init__(
             backbone=backbone,
@@ -56,13 +57,31 @@ class FRNet(EncoderDecoder3D):
             data_preprocessor=data_preprocessor,
             init_cfg=init_cfg)
 
-        # ffe
+        # ffe (frustum feature encoder)
         self.voxel_encoder = MODELS.build(voxel_encoder)
+        
+        # 3D voxel encoder (体素编码器)
+        self.voxel_3d_encoder = None
+        if voxel_3d_encoder is not None:
+            self.voxel_3d_encoder = MODELS.build(voxel_3d_encoder)
 
     def extract_feat(self, batch_inputs_dict: dict) -> dict:
         """Extract features from points."""
         voxel_dict = batch_inputs_dict['voxels'].copy()
         voxel_dict = self.voxel_encoder(voxel_dict)  # FFE 提取 frustum 特征
+        
+        # 提取3D体素特征
+        if self.voxel_3d_encoder is not None:
+            voxel_dict_3d = batch_inputs_dict['voxels'].copy()
+            voxel_dict_3d = self.voxel_3d_encoder(voxel_dict_3d)  # 3D体素编码器提取特征
+            voxel_dict['voxel_3d_feats'] = voxel_dict_3d['voxel_3d_feats']
+            voxel_dict['voxel_3d_coors'] = voxel_dict_3d['voxel_3d_coors']
+            voxel_dict['voxel_shape'] = voxel_dict_3d['voxel_shape']
+            voxel_dict['voxel_3d_sparse'] = voxel_dict_3d.get('voxel_3d_sparse', True)
+            # 保留原始点云信息，用于稀疏体素特征映射
+            if 'voxels' not in voxel_dict:
+                voxel_dict['voxels'] = batch_inputs_dict['voxels']['voxels']
+        
         voxel_dict = self.backbone(voxel_dict)  # Backbone 进行层次化双向融合
         if self.with_neck:
             voxel_dict = self.neck(voxel_dict)
