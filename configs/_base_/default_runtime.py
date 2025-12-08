@@ -4,8 +4,9 @@ default_hooks = dict(
     timer=dict(type='IterTimerHook'),
     logger=dict(type='LoggerHook', interval=50),
     param_scheduler=dict(type='ParamSchedulerHook'),
+    # 断点续训
     checkpoint=dict(
-        type='CheckpointHook', by_epoch=False, interval=-1, save_best='miou'),
+        type='CheckpointHook', by_epoch=False, interval=1000, save_best='miou', save_last=True, max_keep_ckpts=2),
     sampler_seed=dict(type='DistSamplerSeedHook'),
     visualization=dict(type='Det3DVisualizationHook'))
 

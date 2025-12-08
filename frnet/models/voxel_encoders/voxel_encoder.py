@@ -55,6 +55,7 @@ class VoxelFeatureEncoder(nn.Module):
             int((point_cloud_range_tensor[5] - point_cloud_range_tensor[2]) / voxel_size_tensor[2])
         )
         
+        self.use_sparse = use_sparse
         if use_sparse:
             # 使用MLP处理稀疏体素特征，避免创建密集网格
             self.mlp_layers = nn.ModuleList()
@@ -66,6 +67,8 @@ class VoxelFeatureEncoder(nn.Module):
                         build_norm_layer(norm_cfg, out_ch)[1],
                         build_activation_layer(act_cfg)))
                 in_ch = out_ch
+            # 不创建conv_layers，避免checkpoint加载时的参数不匹配
+            self.conv_layers = None
         else:
             # 构建3D卷积层（仅在需要时使用，显存消耗大）
             self.conv_layers = nn.ModuleList()
@@ -82,6 +85,8 @@ class VoxelFeatureEncoder(nn.Module):
                         norm_cfg=norm_cfg,
                         act_cfg=act_cfg))
                 in_ch = out_ch
+            # 不创建mlp_layers，避免checkpoint加载时的参数不匹配
+            self.mlp_layers = None
         
         # 输出特征压缩层（可选）
         self.output_channels = feat_channels[-1]
@@ -163,8 +168,11 @@ class VoxelFeatureEncoder(nn.Module):
         if self.use_sparse:
             # 稀疏模式：直接对体素特征使用MLP，避免创建密集网格
             x = voxel_feats  # [N_voxel, C]
-            for mlp_layer in self.mlp_layers:
-                x = mlp_layer(x)
+            # for mlp_layer in self.mlp_layers:
+            #     x = mlp_layer(x)
+            if self.mlp_layers is not None:
+                for mlp_layer in self.mlp_layers:
+                    x = mlp_layer(x)
             
             # 将稀疏体素特征保存，后续在backbone中映射到range image
             # 这里保存为点级特征，格式与backbone期望的格式兼容
@@ -195,9 +203,11 @@ class VoxelFeatureEncoder(nn.Module):
             
             # 通过3D卷积层提取特征
             x = voxel_grid
-            for conv_layer in self.conv_layers:
-                x = conv_layer(x)
-            
+            # for conv_layer in self.conv_layers:
+            #     x = conv_layer(x)
+            if self.conv_layers is not None:
+                for conv_layer in self.conv_layers:
+                    x = conv_layer(x)            
             voxel_dict['voxel_3d_feats'] = x  # [B, C, X, Y, Z]
             voxel_dict['voxel_3d_sparse'] = False
         

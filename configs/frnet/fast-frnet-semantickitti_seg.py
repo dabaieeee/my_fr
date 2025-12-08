@@ -8,8 +8,8 @@ custom_imports = dict(
 
 model = dict(
     data_preprocessor=dict(
-        H=64, W=512, fov_up=3.0, fov_down=-25.0, ignore_index=19),
-    backbone=dict(output_shape=(64, 512)),
+        H=32, W=360, fov_up=3.0, fov_down=-25.0, ignore_index=19),  # Fast-FRNet统一使用32×360分辨率
+    backbone=dict(output_shape=(32, 360)),
     decode_head=dict(num_classes=20, ignore_index=19),
     # Fast-FRNet可以使用更少的auxiliary head以提升速度
     auxiliary_head=[
