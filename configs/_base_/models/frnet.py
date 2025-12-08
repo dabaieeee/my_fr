@@ -66,6 +66,8 @@ model = dict(
         norm_cfg=dict(type='SyncBN', eps=1e-3, momentum=0.01),
         point_norm_cfg=dict(type='SyncBN', eps=1e-3, momentum=0.01),
         act_cfg=dict(type='HSwish', inplace=True),
+        # 体素-视锥-点分支的中途交互位置：-1 表示stem之后，2表示第3个stage之后
+        voxel_mid_fusion_indices=(-1, 2),
         voxel_3d_channels=256),  # 体素特征通道数，需要与voxel_3d_encoder的输出通道匹配
     decode_head=dict(
         type='FRHead',

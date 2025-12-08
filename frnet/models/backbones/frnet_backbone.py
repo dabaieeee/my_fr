@@ -103,6 +103,8 @@ class FRNetBackbone(BaseModule):
                  point_norm_cfg: ConfigType = dict(type='BN1d'),
                  act_cfg: ConfigType = dict(type='LeakyReLU'),
                  voxel_3d_channels: Optional[int] = None,
+                 # 控制在网络中途插入体素/视锥/点三分支的融合位置（stage 索引，-1 表示 stem 之后）
+                 voxel_mid_fusion_indices: Sequence[int] = (),
                  init_cfg: OptMultiConfig = None) -> None:
         super(FRNetBackbone, self).__init__(init_cfg)
 
@@ -135,6 +137,11 @@ class FRNetBackbone(BaseModule):
             # 将3D体素特征映射到range image的融合层
             self.voxel_3d_fusion = self._make_fusion_layer(
                 stem_channels + voxel_3d_channels, stem_channels)
+            # 额外的体素特征投影，用于中途再次交互
+            self.voxel_range_proj = self._make_fusion_layer(
+                voxel_3d_channels, stem_channels)
+        else:
+            self.voxel_range_proj = None
 
         inplanes = stem_channels
         self.res_layers = []
@@ -200,6 +207,34 @@ class FRNetBackbone(BaseModule):
             self.add_module(point_layer_name, point_fuse_layer)
             self.fuse_layers.append(layer_name)
             self.point_fuse_layers.append(point_layer_name)
+
+        # 中途多模态交互模块（体素-视锥-点）
+        self.voxel_mid_fusion_indices = set(voxel_mid_fusion_indices)
+        self.mid_pixel_fusions = nn.ModuleDict()
+        self.mid_point_fusions = nn.ModuleDict()
+        if self.voxel_3d_channels is not None:
+            for idx in self.voxel_mid_fusion_indices:
+                if idx == -1:
+                    pixel_ch = stem_channels
+                else:
+                    if idx >= len(out_channels):
+                        raise ValueError(
+                            f'voxel_mid_fusion_indices {idx} exceeds stages {len(out_channels)}'
+                        )
+                    pixel_ch = out_channels[idx]
+                point_ch = pixel_ch
+                self.mid_pixel_fusions[str(idx)] = ConvModule(
+                    pixel_ch + stem_channels,
+                    pixel_ch,
+                    kernel_size=3,
+                    padding=1,
+                    conv_cfg=conv_cfg,
+                    norm_cfg=norm_cfg,
+                    act_cfg=act_cfg)
+                self.mid_point_fusions[str(idx)] = nn.Sequential(
+                    nn.Linear(point_ch + stem_channels, point_ch, bias=False),
+                    build_norm_layer(point_norm_cfg, point_ch)[1],
+                    nn.ReLU(inplace=True))
 
     def _make_stem_layer(self, in_channels: int,
                          out_channels: int) -> nn.Module:
@@ -332,6 +367,7 @@ class FRNetBackbone(BaseModule):
         x = self.frustum2pixel(voxel_feats, voxel_coors, batch_size, stride=1)
         x = self.stem(x)
         
+        voxel_range_feats = None
         # 融合3D体素特征（如果存在）
         if self.voxel_3d_channels is not None and 'voxel_3d_feats' in voxel_dict:
             voxel_3d_feats = voxel_dict['voxel_3d_feats']
@@ -351,6 +387,11 @@ class FRNetBackbone(BaseModule):
                 voxel_3d_range_feats = self.voxel3d2range(
                     voxel_3d_feats, pts_coors, batch_size, voxel_dict.get('voxel_shape'))
             
+            # 保存一份用于后续多模态中途交互的体素特征（range 图）
+            voxel_range_feats = voxel_3d_range_feats
+            if self.voxel_range_proj is not None:
+                voxel_range_feats = self.voxel_range_proj(voxel_range_feats)
+
             # 融合体素特征到frustum特征
             x = torch.cat([x, voxel_3d_range_feats], dim=1)
             x = self.voxel_3d_fusion(x)
@@ -365,6 +406,28 @@ class FRNetBackbone(BaseModule):
         pixel_feats = self.frustum2pixel(frustum_feats, stride_voxel_coors, batch_size, stride=1)
         fusion_pixel_feats = torch.cat((pixel_feats, x), dim=1)
         x = self.fusion_stem(fusion_pixel_feats)
+
+        # 中途多模态交互（stem 之后，索引 -1）
+        def apply_mid_fusion(idx: int, stride: int) -> None:
+            nonlocal x, point_feats
+            if voxel_range_feats is None or idx not in self.voxel_mid_fusion_indices:
+                return
+            # 对齐体素分支到当前分辨率
+            voxel_pixel = voxel_range_feats
+            if voxel_pixel.shape[2:] != x.shape[2:]:
+                voxel_pixel = F.interpolate(
+                    voxel_pixel,
+                    size=x.shape[2:],
+                    mode='bilinear',
+                    align_corners=True)
+            fusion_pixel = torch.cat((x, voxel_pixel), dim=1)
+            x = self.mid_pixel_fusions[str(idx)](fusion_pixel) + x
+
+            voxel_point = self.pixel2point(voxel_pixel, pts_coors, stride=stride)
+            fusion_point = torch.cat((point_feats, voxel_point), dim=1)
+            point_feats = self.mid_point_fusions[str(idx)](fusion_point) + point_feats
+
+        apply_mid_fusion(idx=-1, stride=1)
 
         outs = [x]  # 存储每个 stage 的特征
         out_points = [point_feats]
@@ -392,6 +455,10 @@ class FRNetBackbone(BaseModule):
             # residual-attentive
             attention_map = self.attention_layers[i](fuse_out)
             x = fuse_out * attention_map + x
+
+            # 可选的中途多模态交互（融合体素/视锥/点）
+            apply_mid_fusion(idx=i, stride=self.strides[i])
+
             outs.append(x)
             out_points.append(point_feats)
 
