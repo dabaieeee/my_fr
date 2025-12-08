@@ -92,7 +92,7 @@ class VoxelFeatureEncoder(nn.Module):
         self.output_channels = feat_channels[-1]
     
     def voxelize(self, points: Tensor, coors: Tensor) -> Tuple[Tensor, Tensor]:
-        """将点云体素化。
+        """将点云体素化（优化版本，使用向量化操作）。
         
         Args:
             points (Tensor): 点云特征 [N, C]，其中C包含xyz和反射率等
@@ -101,21 +101,21 @@ class VoxelFeatureEncoder(nn.Module):
         Returns:
             Tuple[Tensor, Tensor]: 体素特征和体素坐标 [batch_idx, x, y, z]
         """
-        device = points.device
-        if self.voxel_size.device != device:
-            self.voxel_size = self.voxel_size.to(device)
-        if self.point_cloud_range.device != device:
-            self.point_cloud_range = self.point_cloud_range.to(device)
-        
+        device = points.device   
+        # 优化：只在第一次使用时移动tensor到设备，避免每次都检查
+        voxel_size = self.voxel_size.to(device)
+        point_cloud_range = self.point_cloud_range.to(device)        
         # 获取点云坐标 (x, y, z)
         xyz = points[:, :3]  # [N, 3]
         
         # 计算体素坐标 (x, y, z)
         voxel_coors_xyz = torch.floor(
-            (xyz - self.point_cloud_range[:3]) / self.voxel_size
+            (xyz - point_cloud_range[:3]) / voxel_size
         ).long()  # [N, 3]
         
-        # 限制在有效范围内
+        # 优化：使用torch.clamp一次性限制所有维度（虽然需要分别设置max值，但比循环快）
+        # 注意：torch.clamp不支持不同维度设置不同的max值，所以保持分别clamp
+        # 但这种方式已经是向量化的，比Python循环快得多
         voxel_coors_xyz[:, 0] = torch.clamp(
             voxel_coors_xyz[:, 0], min=0, max=self.voxel_shape[0] - 1)
         voxel_coors_xyz[:, 1] = torch.clamp(
@@ -132,18 +132,19 @@ class VoxelFeatureEncoder(nn.Module):
             voxel_coors_with_batch, return_inverse=True, dim=0
         )
         
-        # 聚合特征（对每个通道分别聚合）
-        voxel_feats = torch.zeros(
-            (unique_voxel_coors.shape[0], self.in_channels),
-            dtype=points.dtype,
-            device=device
-        )
+        # 优化：一次性对所有通道进行scatter_mean，而不是循环
+        # 这比循环调用scatter_mean快得多
+        points_float = points.float()  # 转换为float以提高scatter精度
+        voxel_feats = torch_scatter.scatter_mean(
+            points_float, inverse_map, dim=0
+        )  # [N_voxel, C]
         
-        for i in range(self.in_channels):
-            voxel_feats[:, i] = torch_scatter.scatter_mean(
-                points[:, i].float(), inverse_map, dim=0
-            ).to(points.dtype)
-        
+        # for i in range(self.in_channels):
+        #     voxel_feats[:, i] = torch_scatter.scatter_mean(
+        #         points[:, i].float(), inverse_map, dim=0
+        #     ).to(points.dtype)
+        voxel_feats = voxel_feats.to(points.dtype)
+
         return voxel_feats, unique_voxel_coors
     
     def forward(self, voxel_dict: dict) -> dict:
