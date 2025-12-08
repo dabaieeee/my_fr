@@ -46,6 +46,8 @@ class FRNet(EncoderDecoder3D):
                  test_cfg: OptConfigType = None,
                  data_preprocessor: OptConfigType = None,
                  voxel_3d_encoder: OptConfigType = None,
+                 use_multi_scale_voxel: bool = False,
+                 multi_scale_voxel_config: OptConfigType = None,
                  init_cfg: OptMultiConfig = None) -> None:
         super(FRNet, self).__init__(
             backbone=backbone,
@@ -61,8 +63,13 @@ class FRNet(EncoderDecoder3D):
         self.voxel_encoder = MODELS.build(voxel_encoder)
         
         # 3D voxel encoder (体素编码器)
+        # 如果use_multi_scale_voxel=True，优先使用多尺度体素编码器
         self.voxel_3d_encoder = None
-        if voxel_3d_encoder is not None:
+        if use_multi_scale_voxel and multi_scale_voxel_config is not None:
+            # 使用多尺度体素编码器
+            self.voxel_3d_encoder = MODELS.build(multi_scale_voxel_config)
+        elif voxel_3d_encoder is not None:
+            # 使用单尺度体素编码器（默认）
             self.voxel_3d_encoder = MODELS.build(voxel_3d_encoder)
 
     def extract_feat(self, batch_inputs_dict: dict) -> dict:
