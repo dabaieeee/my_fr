@@ -9,3 +9,7 @@ work_dirs/
 
 # Pytorch
 *.pth
+
+.dist_test/
+
+docs/

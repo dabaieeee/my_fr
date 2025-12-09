@@ -233,21 +233,21 @@ tta_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=7,
-    num_workers=4,
+    batch_size=6,
+    num_workers=6,
     persistent_workers=True,
     sampler=dict(type='InfiniteSampler', shuffle=True),
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file='semantickitti_infos_trainval.pkl',
+        ann_file='semantickitti_infos_train.pkl',
         pipeline=train_pipeline,
         metainfo=metainfo,
         modality=input_modality,
         ignore_index=19,
         backend_args=backend_args))
 val_dataloader = dict(
-    batch_size=2,
+    batch_size=1,
     num_workers=1,
     persistent_workers=True,
     drop_last=False,
