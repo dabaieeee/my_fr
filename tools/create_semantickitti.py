@@ -52,10 +52,6 @@ def get_semantickitti_info(split: str) -> dict:
                     'num_pts_feats':
                     4
                 },
-                'pts_semantic_mask_path':
-                osp.join('sequences',
-                         str(i_folder).zfill(2), 'labels',
-                         str(j).zfill(6) + '.label'),
                 'sample_idx':
                 str(i_folder).zfill(2) + str(j).zfill(6)
             })
