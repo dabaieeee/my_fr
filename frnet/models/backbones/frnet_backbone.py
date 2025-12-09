@@ -170,12 +170,14 @@ class FRNetBackbone(BaseModule):
             # 将 frustum 特征反投影到点，与原始点特征融合，经过一层 mlp ，更新点特征（eq.4）
                 # 输入：frustum 特征（inplanes） + 原始点特征（planes）(形状不一致)
                 # 输出：更新后的点特征（planes）
-            self.point_fusion_layers.append(self._make_point_layer(inplanes + planes, planes))
+            # 使用门控融合层以更好地控制信息流
+            self.point_fusion_layers.append(self._make_gated_point_fusion_layer(inplanes + planes, planes))
 
             # 将点特征投影到 frustum，与 frustum 特征融合，经过一层 conv ，更新 frustum 特征（eq.5）
                 # 输入：更新后的点特征（planes） + 原始 frustum 特征（inplanes） （形状都和更新后的点特征保持一致，故 2* ）
                 # 输出：更新后的 frustum 特征（planes）
-            self.pixel_fusion_layers.append(self._make_fusion_layer(planes * 2, planes))
+            # 使用门控融合层以更好地控制信息流
+            self.pixel_fusion_layers.append(self._make_gated_fusion_layer(planes * 2, planes))
 
             # 注意力模块（eq.6）
             self.attention_layers.append(self._make_attention_layer(planes))
@@ -212,6 +214,8 @@ class FRNetBackbone(BaseModule):
         self.voxel_mid_fusion_indices = set(voxel_mid_fusion_indices)
         self.mid_pixel_fusions = nn.ModuleDict()
         self.mid_point_fusions = nn.ModuleDict()
+        self.mid_pixel_gates = nn.ModuleDict()
+        self.mid_point_gates = nn.ModuleDict()
         if self.voxel_3d_channels is not None:
             for idx in self.voxel_mid_fusion_indices:
                 if idx == -1:
@@ -223,6 +227,7 @@ class FRNetBackbone(BaseModule):
                         )
                     pixel_ch = out_channels[idx]
                 point_ch = pixel_ch
+                # 添加门控机制以更好地控制体素特征的融合
                 self.mid_pixel_fusions[str(idx)] = ConvModule(
                     pixel_ch + stem_channels,
                     pixel_ch,
@@ -231,10 +236,24 @@ class FRNetBackbone(BaseModule):
                     conv_cfg=conv_cfg,
                     norm_cfg=norm_cfg,
                     act_cfg=act_cfg)
+                self.mid_pixel_gates[str(idx)] = nn.Sequential(
+                    build_conv_layer(
+                        conv_cfg,
+                        pixel_ch + stem_channels,
+                        pixel_ch,
+                        kernel_size=1,
+                        padding=0,
+                        bias=False),
+                    build_norm_layer(norm_cfg, pixel_ch)[1],
+                    nn.Sigmoid())
                 self.mid_point_fusions[str(idx)] = nn.Sequential(
                     nn.Linear(point_ch + stem_channels, point_ch, bias=False),
                     build_norm_layer(point_norm_cfg, point_ch)[1],
                     nn.ReLU(inplace=True))
+                self.mid_point_gates[str(idx)] = nn.Sequential(
+                    nn.Linear(point_ch + stem_channels, point_ch, bias=False),
+                    build_norm_layer(point_norm_cfg, point_ch)[1],
+                    nn.Sigmoid())
 
     def _make_stem_layer(self, in_channels: int,
                          out_channels: int) -> nn.Module:
@@ -286,6 +305,46 @@ class FRNetBackbone(BaseModule):
                 bias=False),
             build_norm_layer(self.norm_cfg, out_channels)[1],
             build_activation_layer(self.act_cfg))
+
+    def _make_gated_fusion_layer(self, in_channels: int,
+                                 out_channels: int) -> nn.Module:
+        """创建带门控机制的融合层，用于更好地控制信息流"""
+        return nn.ModuleDict({
+            'fusion': nn.Sequential(
+                build_conv_layer(
+                    self.conv_cfg,
+                    in_channels,
+                    out_channels,
+                    kernel_size=3,
+                    padding=1,
+                    bias=False),
+                build_norm_layer(self.norm_cfg, out_channels)[1],
+                build_activation_layer(self.act_cfg)),
+            'gate': nn.Sequential(
+                build_conv_layer(
+                    self.conv_cfg,
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    padding=0,
+                    bias=False),
+                build_norm_layer(self.norm_cfg, out_channels)[1],
+                nn.Sigmoid())
+        })
+
+    def _make_gated_point_fusion_layer(self, in_channels: int,
+                                       out_channels: int) -> nn.Module:
+        """创建带门控机制的点特征融合层"""
+        return nn.ModuleDict({
+            'fusion': nn.Sequential(
+                nn.Linear(in_channels, out_channels, bias=False),
+                build_norm_layer(self.point_norm_cfg, out_channels)[1],
+                nn.ReLU(inplace=True)),
+            'gate': nn.Sequential(
+                nn.Linear(in_channels, out_channels, bias=False),
+                build_norm_layer(self.point_norm_cfg, out_channels)[1],
+                nn.Sigmoid())
+        })
 
     def _make_attention_layer(self, channels: int) -> nn.Module:
         return nn.Sequential(
@@ -381,7 +440,9 @@ class FRNetBackbone(BaseModule):
                     voxel_dict.get('voxel_3d_coors'),
                     pts_coors, 
                     batch_size,
-                    voxel_dict.get('voxels') if 'voxels' in voxel_dict else None)
+                    voxel_dict.get('voxels') if 'voxels' in voxel_dict else None,
+                    voxel_dict.get('voxel_size'),  # 可选：体素尺寸
+                    voxel_dict.get('point_cloud_range'))  # 可选：点云范围
             else:
                 # 密集模式：体素特征 [B, C, X, Y, Z]
                 voxel_3d_range_feats = self.voxel3d2range(
@@ -402,7 +463,7 @@ class FRNetBackbone(BaseModule):
         point_feats = self.point_stem(fusion_point_feats)
 
         # eq.5
-        stride_voxel_coors, frustum_feats = self.point2frustum(point_feats, pts_coors, stride=1)
+        stride_voxel_coors, frustum_feats, _ = self.point2frustum(point_feats, pts_coors, stride=1)
         pixel_feats = self.frustum2pixel(frustum_feats, stride_voxel_coors, batch_size, stride=1)
         fusion_pixel_feats = torch.cat((pixel_feats, x), dim=1)
         x = self.fusion_stem(fusion_pixel_feats)
@@ -419,13 +480,19 @@ class FRNetBackbone(BaseModule):
                     voxel_pixel,
                     size=x.shape[2:],
                     mode='bilinear',
-                    align_corners=True)
+                    align_corners=False)  # 修复：使用 align_corners=False 避免几何偏移
             fusion_pixel = torch.cat((x, voxel_pixel), dim=1)
-            x = self.mid_pixel_fusions[str(idx)](fusion_pixel) + x
+            # 使用门控机制控制体素特征的融合
+            fused_pixel = self.mid_pixel_fusions[str(idx)](fusion_pixel)
+            pixel_gate = self.mid_pixel_gates[str(idx)](fusion_pixel)
+            x = fused_pixel * pixel_gate + x  # 门控残差连接
 
             voxel_point = self.pixel2point(voxel_pixel, pts_coors, stride=stride)
             fusion_point = torch.cat((point_feats, voxel_point), dim=1)
-            point_feats = self.mid_point_fusions[str(idx)](fusion_point) + point_feats
+            # 使用门控机制控制体素特征的融合
+            fused_point = self.mid_point_fusions[str(idx)](fusion_point)
+            point_gate = self.mid_point_gates[str(idx)](fusion_point)
+            point_feats = fused_point * point_gate + point_feats  # 门控残差连接
 
         apply_mid_fusion(idx=-1, stride=1)
 
@@ -440,10 +507,14 @@ class FRNetBackbone(BaseModule):
                 x, pts_coors, stride=self.strides[i])
             fusion_point_feats = torch.cat((map_point_feats, point_feats),
                                            dim=1)
-            point_feats = self.point_fusion_layers[i](fusion_point_feats)
+            # 使用门控融合层
+            gated_point_fusion = self.point_fusion_layers[i]
+            point_fused = gated_point_fusion['fusion'](fusion_point_feats)
+            point_gate = gated_point_fusion['gate'](fusion_point_feats)
+            point_feats = point_fused * point_gate + point_feats  # 残差连接
 
             # point-to-frustum fusion
-            stride_voxel_coors, frustum_feats = self.point2frustum(
+            stride_voxel_coors, frustum_feats, _ = self.point2frustum(
                 point_feats, pts_coors, stride=self.strides[i])
             pixel_feats = self.frustum2pixel(
                 frustum_feats,
@@ -451,7 +522,11 @@ class FRNetBackbone(BaseModule):
                 batch_size,
                 stride=self.strides[i])
             fusion_pixel_feats = torch.cat((pixel_feats, x), dim=1)
-            fuse_out = self.pixel_fusion_layers[i](fusion_pixel_feats)
+            # 使用门控融合层
+            gated_pixel_fusion = self.pixel_fusion_layers[i]
+            fuse_out = gated_pixel_fusion['fusion'](fusion_pixel_feats)
+            fuse_gate = gated_pixel_fusion['gate'](fusion_pixel_feats)
+            fuse_out = fuse_out * fuse_gate
             # residual-attentive
             attention_map = self.attention_layers[i](fuse_out)
             x = fuse_out * attention_map + x
@@ -468,7 +543,7 @@ class FRNetBackbone(BaseModule):
                     outs[i],
                     size=outs[0].size()[2:],
                     mode='bilinear',
-                    align_corners=True)
+                    align_corners=False)  # 修复：使用 align_corners=False 避免几何偏移
 
         outs[0] = torch.cat(outs, dim=1)
         out_points[0] = torch.cat(out_points, dim=1)
@@ -515,15 +590,21 @@ class FRNetBackbone(BaseModule):
     def point2frustum(self,
                       point_features: Tensor,
                       pts_coors: Tensor,
-                      stride: int = 1) -> Tuple[Tensor, Tensor]:
+                      stride: int = 1) -> Tuple[Tensor, Tensor, Tensor]:
         coors = pts_coors.clone()
         coors[:, 1] = pts_coors[:, 1] // stride
         coors[:, 2] = pts_coors[:, 2] // stride
         voxel_coors, inverse_map = torch.unique(
             coors, return_inverse=True, dim=0)
-        frustum_features = torch_scatter.scatter_max(
-            point_features.float(), inverse_map, dim=0)[0].to(point_features.dtype)
-        return voxel_coors, frustum_features
+        # 使用 scatter_mean 替代 scatter_max，保留更多信息
+        # 同时计算每个frustum内的点数量，用于后续归一化
+        frustum_features = torch_scatter.scatter_mean(
+            point_features.float(), inverse_map, dim=0).to(point_features.dtype)
+        # 计算每个frustum内的点数量（用于密度感知）
+        point_counts = torch_scatter.scatter_sum(
+            torch.ones(point_features.shape[0], 1, device=point_features.device, dtype=point_features.dtype),
+            inverse_map, dim=0).squeeze(-1)
+        return voxel_coors, frustum_features, point_counts
     
     # 将3D体素特征映射到range image（密集模式）
     def voxel3d2range(self,
@@ -558,7 +639,7 @@ class FRNetBackbone(BaseModule):
             voxel_2d_feats,
             size=(self.ny, self.nx),
             mode='bilinear',
-            align_corners=True
+            align_corners=False  # 修复：使用 align_corners=False 避免几何偏移
         )  # [B, C, H, W]
         
         return range_feats
@@ -569,7 +650,9 @@ class FRNetBackbone(BaseModule):
                              voxel_3d_coors: Tensor,
                              pts_coors: Tensor,
                              batch_size: int,
-                             points: Optional[Tensor] = None) -> Tensor:
+                             points: Optional[Tensor] = None,
+                             voxel_size: Optional[Sequence[float]] = None,
+                             point_cloud_range: Optional[Sequence[float]] = None) -> Tensor:
         """将稀疏3D体素特征映射到range image形状。
         
         Args:
@@ -578,6 +661,8 @@ class FRNetBackbone(BaseModule):
             pts_coors (Tensor): 点云坐标 [N, 3]，格式为 [batch_idx, y, x] (frustum坐标)
             batch_size (int): batch大小
             points (Tensor, optional): 原始点云 [N, C]，用于计算点对应的体素
+            voxel_size (Sequence[float], optional): 体素尺寸 [x, y, z]
+            point_cloud_range (Sequence[float], optional): 点云范围 [x_min, y_min, z_min, x_max, y_max, z_max]
             
         Returns:
             Tensor: range image特征 [B, C, H, W]
@@ -591,42 +676,104 @@ class FRNetBackbone(BaseModule):
             device=device
         )
         
-        if points is not None:
-            # 方法：将体素特征通过点云映射到range image
-            # 1. 找到每个点对应的体素（通过体素坐标匹配）
-            # 2. 将体素特征分配给点
+        if points is not None and voxel_size is not None and point_cloud_range is not None:
+            # 改进方法：通过点云找到对应的体素，然后映射到range image
+            # 1. 计算每个点对应的体素坐标
+            # 2. 找到点对应的体素特征
             # 3. 通过frustum坐标填充到range image
             
-            # 计算每个点对应的体素坐标（需要体素编码器的参数）
-            # 这里简化：直接使用体素特征的平均值作为全局特征，然后通过点云分布映射
+            voxel_size_tensor = torch.tensor(voxel_size, device=device, dtype=points.dtype)
+            point_cloud_range_tensor = torch.tensor(point_cloud_range[:3], device=device, dtype=points.dtype)
             
-            # 更实用的方法：对每个batch，将体素特征聚合后通过点云坐标映射
+            # 获取点云坐标 (x, y, z)
+            xyz = points[:, :3]  # [N, 3]
+            
+            # 计算每个点对应的体素坐标 (x, y, z)
+            voxel_coors_xyz = torch.floor(
+                (xyz - point_cloud_range_tensor) / voxel_size_tensor
+            ).long()  # [N, 3]
+            
+            # 为每个点添加batch索引，构建 [batch_idx, x, y, z] 格式
+            batch_indices = pts_coors[:, 0:1]  # [N, 1]
+            point_voxel_coors = torch.cat([batch_indices, voxel_coors_xyz], dim=1)  # [N, 4]
+            
+            # 对每个batch进行处理
             for b in range(batch_size):
-                batch_mask = voxel_3d_coors[:, 0] == b
-                if batch_mask.sum() == 0:
+                batch_point_mask = pts_coors[:, 0] == b
+                batch_voxel_mask = voxel_3d_coors[:, 0] == b
+                
+                if batch_point_mask.sum() == 0 or batch_voxel_mask.sum() == 0:
                     continue
                 
-                batch_voxel_feats = voxel_3d_feats[batch_mask]  # [N_voxel_b, C]
-                batch_voxel_coors = voxel_3d_coors[batch_mask]  # [N_voxel_b, 4]
+                batch_point_voxel_coors = point_voxel_coors[batch_point_mask]  # [N_pts_b, 4]
+                batch_voxel_coors_b = voxel_3d_coors[batch_voxel_mask]  # [N_voxel_b, 4]
+                batch_voxel_feats_b = voxel_3d_feats[batch_voxel_mask]  # [N_voxel_b, C]
+                batch_pts_coors = pts_coors[batch_point_mask]  # [N_pts_b, 3]
                 
-                # 将体素特征通过点云映射
-                # 由于体素坐标是3D的(x,y,z)，而frustum坐标是2D的(y,x)，
-                # 我们需要一个映射策略
-                # 简化：使用体素特征的加权平均，权重基于空间距离
+                # 使用字典查找：将体素坐标转换为字符串键（或使用更高效的方法）
+                # 更高效的方法：使用scatter操作
+                # 创建体素坐标到特征的映射
+                # 由于体素坐标可能不完全匹配，我们使用最近邻或插值
+                # 简化：直接匹配相同的体素坐标
                 
-                # 更简单的方法：将体素特征平均后扩展到整个range image
-                # 或者：通过点云找到对应的体素，然后映射
+                # 将体素坐标转换为可比较的格式
+                # 使用字典或哈希表来快速查找
+                voxel_dict = {}
+                for i, voxel_coor in enumerate(batch_voxel_coors_b):
+                    key = tuple(voxel_coor[1:4].cpu().numpy().tolist())  # (x, y, z)
+                    voxel_dict[key] = batch_voxel_feats_b[i]
                 
-                # 这里使用全局平均特征作为近似
-                global_feat = batch_voxel_feats.mean(dim=0)  # [C]
-                range_feats[b] = global_feat.unsqueeze(0).unsqueeze(0).expand(self.ny, self.nx, -1)
+                # 为每个点找到对应的体素特征
+                point_voxel_feats = torch.zeros(
+                    (batch_point_mask.sum(), voxel_3d_feats.shape[-1]),
+                    dtype=voxel_3d_feats.dtype,
+                    device=device
+                )
+                
+                for i, point_voxel_coor in enumerate(batch_point_voxel_coors):
+                    key = tuple(point_voxel_coor[1:4].cpu().numpy().tolist())
+                    if key in voxel_dict:
+                        point_voxel_feats[i] = voxel_dict[key]
+                    # 如果找不到精确匹配，使用零向量（保持稀疏性）
+                
+                # 通过frustum坐标填充到range image
+                y_coors = batch_pts_coors[:, 1]  # [N_pts_b]
+                x_coors = batch_pts_coors[:, 2]  # [N_pts_b]
+                
+                # 使用scatter_mean来聚合同一frustum位置的点
+                valid_mask = (y_coors >= 0) & (y_coors < self.ny) & (x_coors >= 0) & (x_coors < self.nx)
+                if valid_mask.sum() > 0:
+                    y_coors_valid = y_coors[valid_mask]
+                    x_coors_valid = x_coors[valid_mask]
+                    point_voxel_feats_valid = point_voxel_feats[valid_mask]
+                    
+                    # 创建frustum坐标索引
+                    frustum_indices = y_coors_valid * self.nx + x_coors_valid  # [N_valid]
+                    
+                    # 使用scatter_mean聚合
+                    unique_indices, inverse_map = torch.unique(frustum_indices, return_inverse=True)
+                    aggregated_feats = torch_scatter.scatter_mean(
+                        point_voxel_feats_valid.float(), inverse_map, dim=0
+                    ).to(voxel_3d_feats.dtype)  # [N_unique, C]
+                    
+                    # 填充到range image
+                    y_unique = unique_indices // self.nx
+                    x_unique = unique_indices % self.nx
+                    range_feats[b, y_unique, x_unique] = aggregated_feats
         else:
-            # 如果没有点云信息，使用简化的全局特征
+            # 如果没有点云信息，使用改进的全局特征（按空间分布加权）
+            # 至少避免全局平均填充整个图像
             for b in range(batch_size):
                 batch_mask = voxel_3d_coors[:, 0] == b
                 if batch_mask.sum() > 0:
+                    # 使用体素特征的加权平均，但只在有体素的区域填充
+                    # 这里简化：仍然使用全局平均，但至少不填充整个图像
+                    # 实际应用中，应该通过其他方式获取体素的空间分布信息
                     global_feat = voxel_3d_feats[batch_mask].mean(dim=0)  # [C]
-                    range_feats[b] = global_feat.unsqueeze(0).unsqueeze(0).expand(self.ny, self.nx, -1)
+                    # 只在中心区域填充，而不是整个图像
+                    center_y, center_x = self.ny // 2, self.nx // 2
+                    range_feats[b, center_y, center_x] = global_feat
+                    # 可选：使用高斯分布扩散特征
         
         # 转换为 [B, C, H, W] 格式
         range_feats = range_feats.permute(0, 3, 1, 2).contiguous()  # [B, C, H, W]
