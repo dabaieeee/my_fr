@@ -14,15 +14,27 @@ model = dict(
     # 提供三种方式切换单尺度/多尺度体素编码器：
     #
     # 方式1: 使用单尺度体素编码器（默认，推荐用于快速训练和推理）
+    # voxel_3d_encoder=dict(
+    #     type='VoxelFeatureEncoder',
+    #     in_channels=4,
+    #     feat_channels=(64, 128, 256),
+    #     voxel_size=(0.2, 0.2, 0.2),  # 增大体素尺寸以减少显存占用
+    #     point_cloud_range=(-50.0, -50.0, -3.0, 50.0, 50.0, 3.0),
+    #     norm_cfg=dict(type='SyncBN', eps=1e-3, momentum=0.01),
+    #     act_cfg=dict(type='ReLU', inplace=True),
+    #     use_sparse=True),  # 使用稀疏模式，避免创建密集3D网格
+    
+    # 方式1.5: 使用UNet风格的体素编码器（金字塔特征融合）
     voxel_3d_encoder=dict(
-        type='VoxelFeatureEncoder',
+        type='UNetVoxelFeatureEncoder',
         in_channels=4,
-        feat_channels=(64, 128, 256),
+        feat_channels=(32, 64, 128, 256),
         voxel_size=(0.2, 0.2, 0.2),  # 增大体素尺寸以减少显存占用
         point_cloud_range=(-50.0, -50.0, -3.0, 50.0, 50.0, 3.0),
         norm_cfg=dict(type='SyncBN', eps=1e-3, momentum=0.01),
         act_cfg=dict(type='ReLU', inplace=True),
-        use_sparse=True),  # 使用稀疏模式，避免创建密集3D网格
+        use_sparse=False,  # UNet需要密集网格
+        num_downsample=2),  # 减少下采样层数（3->2）以减少显存占用
     
     # 方式2: 使用多尺度体素编码器（直接替换type）
     # 取消下面的注释并注释掉上面的voxel_3d_encoder即可启用多尺度体素编码器
@@ -68,7 +80,7 @@ model = dict(
         act_cfg=dict(type='HSwish', inplace=True),
         # 体素-视锥-点分支的中途交互位置：-1 表示stem之后，2表示第3个stage之后
         voxel_mid_fusion_indices=(-1, 2),
-        voxel_3d_channels=256),  # 体素特征通道数，需要与voxel_3d_encoder的输出通道匹配
+        voxel_3d_channels=32),  # 体素特征通道数，需要与voxel_3d_encoder的输出通道匹配（UNet 输出32通道）
     decode_head=dict(
         type='FRHead',
         in_channels=128,
