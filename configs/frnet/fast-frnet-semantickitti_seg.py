@@ -76,5 +76,21 @@ model = dict(
             conv_seg_kernel_size=1,
             ignore_index=19,
             indices=4),
+        dict(
+            type='BEVDistillHead',
+            point_channels=128,
+            frustum_channels=128,
+            voxel_channels=256,  # 若未启用体素编码器，会自动跳过教师视角
+            bev_channels=96,
+            loss_l1_weight=0.4,
+            loss_frustum_weight=0.4,
+            loss_nce_weight=0.05,
+            temperature=0.2,
+            with_frustum_view=True,
+            detach_teacher=True,
+            num_classes=1,
+            channels=96,
+            conv_seg_kernel_size=1,
+            ignore_index=19),
     ])
 

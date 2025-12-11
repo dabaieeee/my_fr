@@ -15,6 +15,12 @@ env_cfg = dict(
     mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0),
     dist_cfg=dict(backend='nccl'))
 
+# DDP 设置：启用未用参数检测，避免新增蒸馏/辅助头在极端 batch 下触发报错
+model_wrapper_cfg = dict(
+    type='MMDistributedDataParallel',
+    broadcast_buffers=False,
+    find_unused_parameters=True)
+
 log_processor = dict(type='LogProcessor', window_size=50, by_epoch=False)
 
 log_level = 'INFO'

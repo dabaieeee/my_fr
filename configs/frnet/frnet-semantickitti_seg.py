@@ -75,4 +75,21 @@ model = dict(
             conv_seg_kernel_size=1,
             ignore_index=19,
             indices=4),
+        dict(
+            type='BEVDistillHead',
+            # 三视角蒸馏（Frustum ↔ Point ↔ Voxel），推理可裁剪
+            point_channels=128,
+            frustum_channels=128,
+            voxel_channels=256,
+            bev_channels=96,
+            loss_l1_weight=0.5,
+            loss_frustum_weight=0.5,
+            loss_nce_weight=0.1,
+            temperature=0.2,
+            with_frustum_view=True,
+            detach_teacher=True,
+            num_classes=1,  # 不用于分割，只需占位
+            channels=96,
+            conv_seg_kernel_size=1,
+            ignore_index=19),
     ])

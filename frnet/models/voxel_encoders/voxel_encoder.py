@@ -212,6 +212,10 @@ class VoxelFeatureEncoder(nn.Module):
             voxel_dict['voxel_3d_sparse'] = False
         
         voxel_dict['voxel_shape'] = self.voxel_shape
+        # 记录体素尺寸与点云范围，便于后续 BEV 投影/蒸馏
+        voxel_dict['voxel_size'] = self.voxel_size
+        voxel_dict['point_cloud_range'] = self.point_cloud_range
+        voxel_dict['bev_shape'] = self.voxel_shape[:2]
         
         return voxel_dict
 

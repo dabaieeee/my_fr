@@ -249,6 +249,10 @@ class MultiScaleVoxelFeatureEncoder(nn.Module):
         voxel_dict['voxel_3d_coors'] = ref_coors  # [N_ref, 4]
         voxel_dict['voxel_3d_sparse'] = True  # 标记为稀疏模式
         voxel_dict['voxel_shape'] = self.voxel_shapes[ref_scale_idx]
+        # 记录体素尺寸与点云范围，便于后续 BEV 投影/蒸馏
+        voxel_dict['voxel_size'] = self.voxel_sizes[ref_scale_idx].to(fused_features.device)
+        voxel_dict['point_cloud_range'] = self.point_cloud_range.to(fused_features.device)
+        voxel_dict['bev_shape'] = self.voxel_shapes[ref_scale_idx][:2]
         
         return voxel_dict
     
