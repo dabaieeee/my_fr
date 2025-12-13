@@ -48,6 +48,9 @@ class FRNet(EncoderDecoder3D):
                  voxel_3d_encoder: OptConfigType = None,
                  use_multi_scale_voxel: bool = False,
                  multi_scale_voxel_config: OptConfigType = None,
+                 diffusion_refiner: OptConfigType = None,
+                 diffusion_point_refiner: OptConfigType = None,
+                 diffusion_loss_weight: float = 0.1,
                  init_cfg: OptMultiConfig = None) -> None:
         super(FRNet, self).__init__(
             backbone=backbone,
@@ -71,6 +74,17 @@ class FRNet(EncoderDecoder3D):
         elif voxel_3d_encoder is not None:
             # 使用单尺度体素编码器（默认）
             self.voxel_3d_encoder = MODELS.build(voxel_3d_encoder)
+        
+        # Diffusion特征精炼器（可选）
+        self.diffusion_refiner = None
+        if diffusion_refiner is not None:
+            self.diffusion_refiner = MODELS.build(diffusion_refiner)
+        
+        self.diffusion_point_refiner = None
+        if diffusion_point_refiner is not None:
+            self.diffusion_point_refiner = MODELS.build(diffusion_point_refiner)
+        
+        self.diffusion_loss_weight = diffusion_loss_weight
 
     def extract_feat(self, batch_inputs_dict: dict) -> dict:
         """Extract features from points."""
@@ -90,6 +104,30 @@ class FRNet(EncoderDecoder3D):
                 voxel_dict['voxels'] = batch_inputs_dict['voxels']['voxels']
         
         voxel_dict = self.backbone(voxel_dict)  # Backbone 进行层次化双向融合
+        
+        # Diffusion特征精炼（在backbone之后）
+        if self.diffusion_refiner is not None:
+            # 对frustum特征进行refinement
+            frustum_feats = voxel_dict['voxel_feats'][0]  # [B, C, H, W]
+            if self.training:
+                # 训练模式：计算diffusion loss
+                _, _, diffusion_loss = self.diffusion_refiner(frustum_feats, training=True)
+                voxel_dict['diffusion_loss'] = diffusion_loss
+            else:
+                # 推理模式：refine特征
+                refined_frustum_feats = self.diffusion_refiner(frustum_feats, training=False)
+                voxel_dict['voxel_feats'][0] = refined_frustum_feats
+        
+        if self.diffusion_point_refiner is not None:
+            # 对point特征进行refinement
+            point_feats = voxel_dict['point_feats_backbone'][0]  # [N, C]
+            if self.training:
+                _, _, diffusion_point_loss = self.diffusion_point_refiner(point_feats, training=True)
+                voxel_dict['diffusion_point_loss'] = diffusion_point_loss
+            else:
+                refined_point_feats = self.diffusion_point_refiner(point_feats, training=False)
+                voxel_dict['point_feats_backbone'][0] = refined_point_feats
+        
         if self.with_neck:
             voxel_dict = self.neck(voxel_dict)
         return voxel_dict
@@ -120,6 +158,13 @@ class FRNet(EncoderDecoder3D):
             loss_aux = self._auxiliary_head_forward_train(
                 voxel_dict, batch_data_samples)
             losses.update(loss_aux)
+        
+        # 添加diffusion loss
+        if 'diffusion_loss' in voxel_dict:
+            losses['loss_diffusion'] = self.diffusion_loss_weight * voxel_dict['diffusion_loss']
+        if 'diffusion_point_loss' in voxel_dict:
+            losses['loss_diffusion_point'] = self.diffusion_loss_weight * voxel_dict['diffusion_point_loss']
+        
         return losses
 
     def predict(self,
