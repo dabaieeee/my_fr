@@ -18,7 +18,7 @@ model = dict(
         type='VoxelFeatureEncoder',
         in_channels=4,
         feat_channels=(64, 128, 256),
-        voxel_size=(0.2, 0.2, 0.2),  # 增大体素尺寸以减少显存占用
+        voxel_size=(0.4, 0.4, 0.4),  # 增大体素尺寸以减少显存占用（从0.2增加到0.4）
         point_cloud_range=(-50.0, -50.0, -3.0, 50.0, 50.0, 3.0),
         norm_cfg=dict(type='SyncBN', eps=1e-3, momentum=0.01),
         act_cfg=dict(type='ReLU', inplace=True),
