@@ -21,6 +21,7 @@ class FrustumHead(Base3DDecodeHead):
                  loss_dice: OptConfigType = None,
                  loss_lovasz: OptConfigType = None,
                  loss_boundary: OptConfigType = None,
+                 enable_imitation: bool = False,
                  indices: int = 0,
                  **kwargs) -> None:
         super(FrustumHead, self).__init__(**kwargs)
@@ -39,6 +40,8 @@ class FrustumHead(Base3DDecodeHead):
         else:
             self.loss_boundary = None
 
+        # 若为 True，训练时将其预测纳入模仿损失
+        self.enable_imitation = enable_imitation
         self.indices = indices
 
     def build_conv_seg(self, channels: int, num_classes: int,

@@ -14,6 +14,7 @@ model = dict(
     auxiliary_head=[
         dict(
             type='FrustumHead',
+            enable_imitation=True,
             channels=128,
             num_classes=17,
             dropout_ratio=0,
@@ -29,6 +30,7 @@ model = dict(
             ignore_index=16),
         dict(
             type='FrustumHead',
+            enable_imitation=True,
             channels=128,
             num_classes=17,
             dropout_ratio=0,
@@ -45,6 +47,7 @@ model = dict(
             indices=2),
         dict(
             type='FrustumHead',
+            enable_imitation=True,
             channels=128,
             num_classes=17,
             dropout_ratio=0,
@@ -61,6 +64,7 @@ model = dict(
             indices=3),
         dict(
             type='FrustumHead',
+            enable_imitation=True,
             channels=128,
             num_classes=17,
             dropout_ratio=0,

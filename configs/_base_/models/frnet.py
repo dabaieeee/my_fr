@@ -52,6 +52,10 @@ model = dict(
     #     act_cfg=dict(type='ReLU', inplace=True),
     #     fusion_method='concat',
     #     use_sparse=True),
+    # XMUDa 风格的跨模态模仿损失（frustum ↔ point）
+    imitation_loss_cfg=dict(
+        weight=0.05,          # 降低模仿权重以减轻显存/梯度开销
+        temperature=1.0),    # KL 温度
     backbone=dict(
         type='FRNetBackbone',
         in_channels=16,
