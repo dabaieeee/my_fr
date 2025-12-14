@@ -296,24 +296,52 @@ class DualPathFRNetBackbone(BaseModule):
         })
 
     def _make_attention_layer(self, channels: int) -> nn.Module:
-        return nn.Sequential(
-            build_conv_layer(
-                self.conv_cfg,
-                channels,
-                channels,
-                kernel_size=3,
-                padding=1,
-                bias=False),
-            build_norm_layer(self.norm_cfg, channels)[1],
-            build_activation_layer(self.act_cfg),
-            build_conv_layer(
-                self.conv_cfg,
-                channels,
-                channels,
-                kernel_size=3,
-                padding=1,
-                bias=False),
-            build_norm_layer(self.norm_cfg, channels)[1], nn.Sigmoid())
+        """Enhanced attention layer with channel and spatial attention.
+        
+        Uses both channel attention and spatial attention for better feature
+        refinement.
+        """
+        return nn.ModuleDict({
+            # Channel attention: focuses on 'what' features are important
+            'channel_attention': nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                build_conv_layer(
+                    self.conv_cfg,
+                    channels,
+                    channels // 4,
+                    kernel_size=1,
+                    padding=0,
+                    bias=False),
+                build_activation_layer(self.act_cfg),
+                build_conv_layer(
+                    self.conv_cfg,
+                    channels // 4,
+                    channels,
+                    kernel_size=1,
+                    padding=0,
+                    bias=False),
+                build_norm_layer(self.norm_cfg, channels)[1],
+                nn.Sigmoid()),
+            # Spatial attention: focuses on 'where' features are important
+            'spatial_attention': nn.Sequential(
+                build_conv_layer(
+                    self.conv_cfg,
+                    channels,
+                    channels // 4,
+                    kernel_size=3,
+                    padding=1,
+                    bias=False),
+                build_norm_layer(self.norm_cfg, channels // 4)[1],
+                build_activation_layer(self.act_cfg),
+                build_conv_layer(
+                    self.conv_cfg,
+                    channels // 4,
+                    1,
+                    kernel_size=3,
+                    padding=1,
+                    bias=False),
+                nn.Sigmoid())
+        })
 
     def make_res_layer(self,
                       block: nn.Module,
@@ -472,9 +500,14 @@ class DualPathFRNetBackbone(BaseModule):
             fuse_gate = gated_pixel_fusion['gate'](fusion_pixel_feats)
             fuse_out = fuse_out * fuse_gate
             
-            # Residual-attentive fusion
-            attention_map = self.attention_layers[i](fuse_out)
-            x = fuse_out * attention_map + x
+            # Enhanced residual-attentive fusion with channel and spatial attention
+            attention_module = self.attention_layers[i]
+            # Channel attention
+            channel_att = attention_module['channel_attention'](fuse_out)
+            fuse_out = fuse_out * channel_att
+            # Spatial attention
+            spatial_att = attention_module['spatial_attention'](fuse_out)
+            x = fuse_out * spatial_att + x
 
             outs.append(x)
             out_points.append(point_feats)

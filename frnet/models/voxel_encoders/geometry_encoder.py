@@ -81,7 +81,8 @@ class GeometryEncoder(nn.Module):
                        k: int = 10) -> torch.Tensor:
         """Compute surface normals using local neighborhood.
         
-        Uses PyTorch-based k-NN search for efficiency.
+        Optimized version using frustum-based spatial search instead of 
+        expensive pairwise distance computation.
         
         Args:
             points (Tensor): Point coordinates [N, 3].
@@ -93,25 +94,49 @@ class GeometryEncoder(nn.Module):
         """
         device = points.device
         N = points.shape[0]
-        k = min(k + 1, N)  # +1 to exclude self
-        
-        # Compute pairwise distances
-        dists = torch.cdist(points, points)  # [N, N]
-        
-        # Get k nearest neighbors (including self)
-        _, indices = torch.topk(dists, k, dim=1, largest=False)  # [N, k]
-        
         normals = torch.zeros_like(points)
-        for i in range(N):
-            if k > 1:
-                # Get neighbors (excluding the point itself)
-                neighbor_indices = indices[i, 1:]  # Skip first (self)
-                neighbor_points = points[neighbor_indices]  # [k-1, 3]
-                center = points[i:i+1]  # [1, 3]
+        
+        if N == 0:
+            return normals
+        
+        # Use frustum-based spatial search for efficiency
+        # Group points by batch and use frustum coordinates (y, x) for fast neighbor search
+        batch_indices = coors[:, 0].long()
+        y_coords = coors[:, 1].long()
+        x_coords = coors[:, 2].long()
+        
+        # Vectorized normal computation using frustum neighbors
+        # For each point, search neighbors in a local window in frustum space
+        search_radius = max(1, int(k ** 0.5))  # Adaptive search radius
+        
+        for batch_idx in torch.unique(batch_indices):
+            batch_mask = batch_indices == batch_idx
+            batch_points = points[batch_mask]
+            batch_y = y_coords[batch_mask]
+            batch_x = x_coords[batch_mask]
+            batch_indices_local = torch.where(batch_mask)[0]
+            
+            if len(batch_points) == 0:
+                continue
+            
+            # Create a grid-based neighbor search
+            # For each point, find neighbors within search_radius in frustum space
+            for i, (y, x) in enumerate(zip(batch_y, batch_x)):
+                # Find neighbors within search radius
+                y_diff = torch.abs(batch_y - y)
+                x_diff = torch.abs(batch_x - x)
+                neighbor_mask = (y_diff <= search_radius) & (x_diff <= search_radius)
+                neighbor_mask[i] = False  # Exclude self
                 
-                if len(neighbor_points) > 0:
-                    # Compute covariance matrix
-                    centered = neighbor_points - center  # [k-1, 3]
+                neighbor_indices = torch.where(neighbor_mask)[0]
+                
+                if len(neighbor_indices) >= 3:
+                    # Get neighbor points
+                    neighbor_points = batch_points[neighbor_indices]
+                    center = batch_points[i:i+1]
+                    
+                    # Compute covariance matrix (vectorized)
+                    centered = neighbor_points - center  # [k_neighbors, 3]
                     cov = torch.mm(centered.t(), centered) / len(centered)  # [3, 3]
                     
                     # Eigenvalue decomposition
@@ -123,7 +148,7 @@ class GeometryEncoder(nn.Module):
                         center_vec = center.squeeze()
                         if torch.dot(normal, center_vec) > 0:
                             normal = -normal
-                        normals[i] = normal
+                        normals[batch_indices_local[i]] = normal
                     except:
                         # Fallback: use simple normal estimation
                         if len(neighbor_points) >= 2:
@@ -135,7 +160,7 @@ class GeometryEncoder(nn.Module):
                             normal = torch.cross(v1, v2)
                             norm = torch.norm(normal)
                             if norm > 1e-6:
-                                normals[i] = normal / norm
+                                normals[batch_indices_local[i]] = normal / norm
         
         return normals
 
@@ -144,7 +169,7 @@ class GeometryEncoder(nn.Module):
                          k: int = 10) -> torch.Tensor:
         """Compute curvature features (linearity, planarity, sphericity).
         
-        Uses PyTorch-based k-NN search for efficiency.
+        Optimized version using frustum-based spatial search.
         
         Args:
             points (Tensor): Point coordinates [N, 3].
@@ -156,22 +181,42 @@ class GeometryEncoder(nn.Module):
         """
         device = points.device
         N = points.shape[0]
-        k = min(k + 1, N)  # +1 to exclude self
-        
-        # Compute pairwise distances
-        dists = torch.cdist(points, points)  # [N, N]
-        
-        # Get k nearest neighbors (including self)
-        _, indices = torch.topk(dists, k, dim=1, largest=False)  # [N, k]
-        
         curvature_features = torch.zeros((N, 3), device=device)
-        for i in range(N):
-            if k > 1:
-                neighbor_indices = indices[i, 1:]  # Skip first (self)
-                neighbor_points = points[neighbor_indices]
-                center = points[i:i+1]
+        
+        if N == 0:
+            return curvature_features
+        
+        # Use frustum-based spatial search for efficiency
+        batch_indices = coors[:, 0].long()
+        y_coords = coors[:, 1].long()
+        x_coords = coors[:, 2].long()
+        
+        search_radius = max(1, int(k ** 0.5))  # Adaptive search radius
+        
+        for batch_idx in torch.unique(batch_indices):
+            batch_mask = batch_indices == batch_idx
+            batch_points = points[batch_mask]
+            batch_y = y_coords[batch_mask]
+            batch_x = x_coords[batch_mask]
+            batch_indices_local = torch.where(batch_mask)[0]
+            
+            if len(batch_points) == 0:
+                continue
+            
+            # Create a grid-based neighbor search
+            for i, (y, x) in enumerate(zip(batch_y, batch_x)):
+                # Find neighbors within search radius
+                y_diff = torch.abs(batch_y - y)
+                x_diff = torch.abs(batch_x - x)
+                neighbor_mask = (y_diff <= search_radius) & (x_diff <= search_radius)
+                neighbor_mask[i] = False  # Exclude self
                 
-                if len(neighbor_points) > 0:
+                neighbor_indices = torch.where(neighbor_mask)[0]
+                
+                if len(neighbor_indices) >= 3:
+                    neighbor_points = batch_points[neighbor_indices]
+                    center = batch_points[i:i+1]
+                    
                     centered = neighbor_points - center
                     cov = torch.mm(centered.t(), centered) / len(centered)
                     try:
@@ -191,7 +236,7 @@ class GeometryEncoder(nn.Module):
                             # Sphericity: lambda3 / lambda1
                             sphericity = eigenvals[2] / (eigenvals[0] + 1e-6)
                             
-                            curvature_features[i] = torch.stack([
+                            curvature_features[batch_indices_local[i]] = torch.stack([
                                 linearity, planarity, sphericity
                             ])
                     except:

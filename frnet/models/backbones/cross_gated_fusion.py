@@ -98,6 +98,26 @@ class CrossGatedFusion(BaseModule):
         
         # Optional: Cross-attention enhancement
         self.use_cross_attention = False  # Can be enabled for future enhancement
+        
+        # Pre-build MLP layers for point features (fix dynamic creation issue)
+        gate_in_channels = geo_channels + sem_channels
+        self.gate_mlp = nn.Sequential(
+            nn.Linear(gate_in_channels, out_channels, bias=False),
+            build_norm_layer(norm_cfg, out_channels)[1],
+            build_activation_layer(act_cfg),
+            nn.Linear(out_channels, out_channels, bias=False),
+            build_norm_layer(norm_cfg, out_channels)[1],
+            nn.Sigmoid())
+        
+        self.geo_transform_mlp = nn.Sequential(
+            nn.Linear(geo_channels, out_channels, bias=False),
+            build_norm_layer(norm_cfg, out_channels)[1],
+            build_activation_layer(act_cfg))
+        
+        self.sem_transform_mlp = nn.Sequential(
+            nn.Linear(sem_channels, out_channels, bias=False),
+            build_norm_layer(norm_cfg, out_channels)[1],
+            build_activation_layer(act_cfg))
 
     def forward(self, geo_feats: torch.Tensor, 
                 sem_feats: torch.Tensor) -> torch.Tensor:
@@ -130,32 +150,8 @@ class CrossGatedFusion(BaseModule):
             
         else:
             # Point features: [N, C]
-            # For point features, use pre-built MLP layers
             # Concatenate along feature dimension
             concat_feats = torch.cat([geo_feats, sem_feats], dim=1)  # [N, C_geo + C_sem]
-            
-            # Build MLP layers for point features (if not exists)
-            if not hasattr(self, 'gate_mlp'):
-                gate_in_channels = self.geo_channels + self.sem_channels
-                self.gate_mlp = nn.Sequential(
-                    nn.Linear(gate_in_channels, self.out_channels, bias=False),
-                    build_norm_layer(self.norm_cfg, self.out_channels)[1],
-                    build_activation_layer(self.act_cfg),
-                    nn.Linear(self.out_channels, self.out_channels, bias=False),
-                    build_norm_layer(self.norm_cfg, self.out_channels)[1],
-                    nn.Sigmoid())
-            
-            if not hasattr(self, 'geo_transform_mlp'):
-                self.geo_transform_mlp = nn.Sequential(
-                    nn.Linear(self.geo_channels, self.out_channels, bias=False),
-                    build_norm_layer(self.norm_cfg, self.out_channels)[1],
-                    build_activation_layer(self.act_cfg))
-            
-            if not hasattr(self, 'sem_transform_mlp'):
-                self.sem_transform_mlp = nn.Sequential(
-                    nn.Linear(self.sem_channels, self.out_channels, bias=False),
-                    build_norm_layer(self.norm_cfg, self.out_channels)[1],
-                    build_activation_layer(self.act_cfg))
             
             # Compute gate
             gate = self.gate_mlp(concat_feats)  # [N, C_out]
