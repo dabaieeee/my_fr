@@ -10,7 +10,11 @@ model = dict(
     data_preprocessor=dict(
         H=64, W=512, fov_up=3.0, fov_down=-25.0, ignore_index=19),
     backbone=dict(output_shape=(64, 512)),
-    decode_head=dict(num_classes=20, ignore_index=19),
+    decode_head=dict(
+        num_classes=20, 
+        ignore_index=19,
+        # 为SemanticKITTI设置正确的ignore_index
+        loss_focal=dict(ignore_index=19)),  # 覆盖base配置中的ignore_index
     auxiliary_head=[
         dict(
             type='FrustumHead',

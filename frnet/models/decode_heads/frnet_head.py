@@ -22,10 +22,13 @@ class FRHead(Base3DDecodeHead):
                      use_sigmoid=False,
                      class_weight=None,
                      loss_weight=1.0),
+                 loss_focal: ConfigType = None,  # 可选的Focal Loss
                  **kwargs) -> None:
         super(FRHead, self).__init__(**kwargs)
 
         self.loss_ce = MODELS.build(loss_ce)
+        # 如果配置了Focal Loss，则构建它
+        self.loss_focal = MODELS.build(loss_focal) if loss_focal is not None else None
 
         self.mlps = nn.ModuleList()
         for i in range(len(middle_channels)):
@@ -70,15 +73,24 @@ class FRHead(Base3DDecodeHead):
         ]
         return torch.cat(gt_semantic_segs, dim=0)
 
-    # 交叉熵
+    # 交叉熵 + 可选的Focal Loss
     def loss_by_feat(self, voxel_dict: dict,
                      batch_data_samples: SampleList) -> dict:
         seg_logit = voxel_dict['seg_logit']
         seg_label = self._stack_batch_gt(batch_data_samples)
 
         loss = dict()
+        # 交叉熵损失
         loss['loss_ce'] = self.loss_ce(
             seg_logit, seg_label, ignore_index=self.ignore_index)
+        
+        # 如果配置了Focal Loss，则添加它
+        if self.loss_focal is not None:
+            # Focal Loss需要处理ignore_index，使用head的ignore_index
+            # 注意：Focal Loss的ignore_index应该在配置中设置，这里直接调用
+            loss['loss_focal'] = self.loss_focal(
+                seg_logit, seg_label)
+        
         return loss
 
     def predict(self, voxel_dict: dict, batch_input_metas: List[dict],

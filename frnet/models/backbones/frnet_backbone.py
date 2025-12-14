@@ -105,6 +105,8 @@ class FRNetBackbone(BaseModule):
                  voxel_3d_channels: Optional[int] = None,
                  # 控制在网络中途插入体素/视锥/点三分支的融合位置（stage 索引，-1 表示 stem 之后）
                  voxel_mid_fusion_indices: Sequence[int] = (),
+                 # 是否使用自适应特征融合（根据特征质量动态调整权重）
+                 use_adaptive_fusion: bool = False,
                  init_cfg: OptMultiConfig = None) -> None:
         super(FRNetBackbone, self).__init__(init_cfg)
 
@@ -123,6 +125,7 @@ class FRNetBackbone(BaseModule):
         self.norm_cfg = norm_cfg
         self.point_norm_cfg = point_norm_cfg
         self.act_cfg = act_cfg
+        self.use_adaptive_fusion = use_adaptive_fusion
         # 处理 frustum 特征的 conv 层
         self.stem = self._make_stem_layer(in_channels, stem_channels)
         # 处理 point 特征的 mlp 层
@@ -170,14 +173,20 @@ class FRNetBackbone(BaseModule):
             # 将 frustum 特征反投影到点，与原始点特征融合，经过一层 mlp ，更新点特征（eq.4）
                 # 输入：frustum 特征（inplanes） + 原始点特征（planes）(形状不一致)
                 # 输出：更新后的点特征（planes）
-            # 使用门控融合层以更好地控制信息流
-            self.point_fusion_layers.append(self._make_gated_point_fusion_layer(inplanes + planes, planes))
+            # 使用门控融合层或自适应融合层以更好地控制信息流
+            if self.use_adaptive_fusion:
+                self.point_fusion_layers.append(self._make_adaptive_point_fusion_layer(inplanes + planes, planes))
+            else:
+                self.point_fusion_layers.append(self._make_gated_point_fusion_layer(inplanes + planes, planes))
 
             # 将点特征投影到 frustum，与 frustum 特征融合，经过一层 conv ，更新 frustum 特征（eq.5）
                 # 输入：更新后的点特征（planes） + 原始 frustum 特征（inplanes） （形状都和更新后的点特征保持一致，故 2* ）
                 # 输出：更新后的 frustum 特征（planes）
-            # 使用门控融合层以更好地控制信息流
-            self.pixel_fusion_layers.append(self._make_gated_fusion_layer(planes * 2, planes))
+            # 使用门控融合层或自适应融合层以更好地控制信息流
+            if self.use_adaptive_fusion:
+                self.pixel_fusion_layers.append(self._make_adaptive_fusion_layer(planes * 2, planes))
+            else:
+                self.pixel_fusion_layers.append(self._make_gated_fusion_layer(planes * 2, planes))
 
             # 注意力模块（eq.6）
             self.attention_layers.append(self._make_attention_layer(planes))
@@ -345,6 +354,58 @@ class FRNetBackbone(BaseModule):
                 build_norm_layer(self.point_norm_cfg, out_channels)[1],
                 nn.Sigmoid())
         })
+    
+    def _make_adaptive_fusion_layer(self, in_channels: int,
+                                    out_channels: int) -> nn.Module:
+        """创建自适应特征融合层，根据特征质量动态调整权重"""
+        return nn.ModuleDict({
+            'fusion': nn.Sequential(
+                build_conv_layer(
+                    self.conv_cfg,
+                    in_channels,
+                    out_channels,
+                    kernel_size=3,
+                    padding=1,
+                    bias=False),
+                build_norm_layer(self.norm_cfg, out_channels)[1],
+                build_activation_layer(self.act_cfg)),
+            # 质量评估网络：评估frustum和point特征的质量
+            'quality_net': nn.Sequential(
+                build_conv_layer(
+                    self.conv_cfg,
+                    in_channels,
+                    out_channels // 4,
+                    kernel_size=1,
+                    padding=0,
+                    bias=False),
+                build_norm_layer(self.norm_cfg, out_channels // 4)[1],
+                build_activation_layer(self.act_cfg),
+                build_conv_layer(
+                    self.conv_cfg,
+                    out_channels // 4,
+                    2,  # 输出两个权重：frustum权重和point权重
+                    kernel_size=1,
+                    padding=0,
+                    bias=False),
+                nn.Softmax(dim=1))  # 归一化权重
+        })
+    
+    def _make_adaptive_point_fusion_layer(self, in_channels: int,
+                                          out_channels: int) -> nn.Module:
+        """创建自适应点特征融合层，根据特征质量动态调整权重"""
+        return nn.ModuleDict({
+            'fusion': nn.Sequential(
+                nn.Linear(in_channels, out_channels, bias=False),
+                build_norm_layer(self.point_norm_cfg, out_channels)[1],
+                nn.ReLU(inplace=True)),
+            # 质量评估网络：评估frustum和point特征的质量
+            'quality_net': nn.Sequential(
+                nn.Linear(in_channels, out_channels // 4, bias=False),
+                build_norm_layer(self.point_norm_cfg, out_channels // 4)[1],
+                nn.ReLU(inplace=True),
+                nn.Linear(out_channels // 4, 2, bias=False),  # 输出两个权重
+                nn.Softmax(dim=1))  # 归一化权重
+        })
 
     def _make_attention_layer(self, channels: int) -> nn.Module:
         return nn.Sequential(
@@ -507,11 +568,20 @@ class FRNetBackbone(BaseModule):
                 x, pts_coors, stride=self.strides[i])
             fusion_point_feats = torch.cat((map_point_feats, point_feats),
                                            dim=1)
-            # 使用门控融合层
-            gated_point_fusion = self.point_fusion_layers[i]
-            point_fused = gated_point_fusion['fusion'](fusion_point_feats)
-            point_gate = gated_point_fusion['gate'](fusion_point_feats)
-            point_feats = point_fused * point_gate + point_feats  # 残差连接
+            # 使用门控融合层或自适应融合层
+            point_fusion_layer = self.point_fusion_layers[i]
+            point_fused = point_fusion_layer['fusion'](fusion_point_feats)
+            if self.use_adaptive_fusion:
+                # 自适应融合：根据特征质量动态调整权重
+                quality_weights = point_fusion_layer['quality_net'](fusion_point_feats)  # [N, 2]
+                # quality_weights[:, 0] 是 map_point_feats 的权重
+                # quality_weights[:, 1] 是 point_feats 的权重
+                point_feats = (point_fused * quality_weights[:, 0:1] + 
+                              point_feats * quality_weights[:, 1:2])
+            else:
+                # 门控融合
+                point_gate = point_fusion_layer['gate'](fusion_point_feats)
+                point_feats = point_fused * point_gate + point_feats  # 残差连接
 
             # point-to-frustum fusion
             stride_voxel_coors, frustum_feats, _ = self.point2frustum(
@@ -522,11 +592,20 @@ class FRNetBackbone(BaseModule):
                 batch_size,
                 stride=self.strides[i])
             fusion_pixel_feats = torch.cat((pixel_feats, x), dim=1)
-            # 使用门控融合层
-            gated_pixel_fusion = self.pixel_fusion_layers[i]
-            fuse_out = gated_pixel_fusion['fusion'](fusion_pixel_feats)
-            fuse_gate = gated_pixel_fusion['gate'](fusion_pixel_feats)
-            fuse_out = fuse_out * fuse_gate
+            # 使用门控融合层或自适应融合层
+            pixel_fusion_layer = self.pixel_fusion_layers[i]
+            fuse_out = pixel_fusion_layer['fusion'](fusion_pixel_feats)
+            if self.use_adaptive_fusion:
+                # 自适应融合：根据特征质量动态调整权重
+                quality_weights = pixel_fusion_layer['quality_net'](fusion_pixel_feats)  # [B, 2, H, W]
+                # quality_weights[:, 0] 是 pixel_feats 的权重
+                # quality_weights[:, 1] 是 x 的权重
+                fuse_out = (fuse_out * quality_weights[:, 0:1] + 
+                           x * quality_weights[:, 1:2])
+            else:
+                # 门控融合
+                fuse_gate = pixel_fusion_layer['gate'](fusion_pixel_feats)
+                fuse_out = fuse_out * fuse_gate
             # residual-attentive
             attention_map = self.attention_layers[i](fuse_out)
             x = fuse_out * attention_map + x
