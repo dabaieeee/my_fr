@@ -3,7 +3,8 @@ optim_wrapper = dict(
     type='AmpOptimWrapper',
     loss_scale='dynamic',
     optimizer=dict(
-        type='AdamW', lr=lr, betas=(0.9, 0.999), weight_decay=0.01, eps=1e-6))
+        type='AdamW', lr=lr, betas=(0.9, 0.999), weight_decay=0.01, eps=1e-6),
+    clip_grad=dict(max_norm=1.0, norm_type=2))
 
 param_scheduler = [
     dict(
