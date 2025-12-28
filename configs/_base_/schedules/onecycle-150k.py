@@ -1,8 +1,10 @@
 lr = 0.01
 optim_wrapper = dict(
-    type='OptimWrapper',
+    type='AmpOptimWrapper',
+    loss_scale='dynamic',
     optimizer=dict(
-        type='AdamW', lr=lr, betas=(0.9, 0.999), weight_decay=0.01, eps=1e-6))
+        type='AdamW', lr=lr, betas=(0.9, 0.999), weight_decay=0.01, eps=1e-6),
+    clip_grad=dict(max_norm=1.0, norm_type=2))
 
 param_scheduler = [
     dict(
@@ -16,7 +18,7 @@ param_scheduler = [
 ]
 
 train_cfg = dict(
-    type='IterBasedTrainLoop', max_iters=150000, val_interval=1500)
+    type='IterBasedTrainLoop', max_iters=300000, val_interval=2000)
 val_cfg = dict()
 test_cfg = dict()
 

@@ -47,4 +47,23 @@ model = dict(
             use_sigmoid=False,
             class_weight=None,
             loss_weight=1.0),
-        conv_seg_kernel_size=1))
+        conv_seg_kernel_size=1),
+    # Feature-level Consistency 配置
+    use_feature_consistency=False,  # 是否启用特征级一致性约束
+    feature_consistency_loss=dict(
+        type='FeatureLevelConsistencyLoss',
+        loss_weight=1.0,
+        loss_type='mse'),  # 'mse', 'cosine', 'kl'
+    feature_consistency_stages=[1, 2, 3],  # 在哪些stage应用特征一致性
+    feature_consistency_weight=0.1,  # 特征一致性损失的权重
+    # Prediction-level Consistency 配置
+    use_prediction_consistency=False,  # 是否启用预测级一致性约束
+    prediction_consistency_loss=dict(
+        type='PredictionConsistencyLoss',
+        loss_weight=1.0,
+        loss_type='kl'),  # 'kl', 'js', 'ce'
+    prediction_consistency_weight=0.1,  # 预测一致性损失的权重
+    # Offset Network 配置
+    frustum_offset_range=3,  # Frustum分支的偏移范围（像素）
+    voxel_offset_range=2,  # Voxel分支的偏移范围（体素）
+    offset_reg_weight=0.01)  # 偏移正则化损失的权重

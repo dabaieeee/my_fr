@@ -328,6 +328,9 @@ class FRNetBackbone(BaseModule):
         pts_coors = voxel_dict['coors']
         batch_size = pts_coors[-1, 0].item() + 1
 
+        # Store intermediate stage features for consistency loss
+        stage_features = dict()
+
         # 将 frustum 特征转换为 range image（pixel），并通过 stem 层提取初始特征
         x = self.frustum2pixel(voxel_feats, voxel_coors, batch_size, stride=1)
         x = self.stem(x)
@@ -394,6 +397,14 @@ class FRNetBackbone(BaseModule):
             x = fuse_out * attention_map + x
             outs.append(x)
             out_points.append(point_feats)
+            
+            # Store intermediate features for consistency loss
+            # Stage index is i+1 (0-indexed in loop, but stages are 1-indexed)
+            stage_features[i + 1] = {
+                'point_feats': point_feats.clone(),
+                'frustum_feats': x.clone(),
+                'stride': self.strides[i]
+            }
 
         for i in range(len(outs)):
             if outs[i].shape != outs[0].shape:
@@ -415,6 +426,7 @@ class FRNetBackbone(BaseModule):
 
         voxel_dict['voxel_feats'] = outs
         voxel_dict['point_feats_backbone'] = out_points
+        voxel_dict['stage_features'] = stage_features
         return voxel_dict
 
     # 将 frustum 特征转换为 range image（pixel）
