@@ -9,26 +9,26 @@ from torch import Tensor
 
 @MODELS.register_module()
 class DualPathFRNet(EncoderDecoder3D):
-    """Dual-Path FRNet Segmentor with Geometry-Semantic Decoupling.
+    """双通路FRNet分割器，具有几何-语义解耦。
     
-    This segmentor implements a dual-path architecture:
-    1. Geometry Path: Extracts structure-preserving geometric features
-    2. Semantic Path: Extracts context-aware semantic features using FFE
-    3. Cross-Gated Fusion: Adaptively fuses geometry and semantic features
+    该分割器实现了双通路架构：
+    1. 几何路径：提取结构保持的几何特征
+    2. 语义路径：使用FFE提取上下文感知的语义特征
+    3. 交叉门控融合：自适应地融合几何和语义特征
     
-    The FPFM (Frustum-Point Fusion Module) is preserved in the backbone.
+    FPFM（视锥-点融合模块）在骨干网络中保留。
     
     Args:
-        geometry_encoder (dict): Config for GeometryEncoder.
-        semantic_encoder (dict): Config for SemanticEncoder (uses FFE).
-        backbone (dict): Config for DualPathFRNetBackbone.
-        decode_head (dict): Config for decode head.
-        neck (dict, optional): Config for neck. Defaults to None.
-        auxiliary_head (dict, optional): Config for auxiliary head. Defaults to None.
-        train_cfg (dict, optional): Training config. Defaults to None.
-        test_cfg (dict, optional): Testing config. Defaults to None.
-        data_preprocessor (dict, optional): Data preprocessor config. Defaults to None.
-        init_cfg (dict, optional): Weight initialization config. Defaults to None.
+        geometry_encoder (dict): GeometryEncoder的配置。
+        semantic_encoder (dict): SemanticEncoder的配置（使用FFE）。
+        backbone (dict): DualPathFRNetBackbone的配置。
+        decode_head (dict): 解码头的配置。
+        neck (dict, optional): 颈部的配置。默认为 None。
+        auxiliary_head (dict, optional): 辅助头的配置。默认为 None。
+        train_cfg (dict, optional): 训练配置。默认为 None。
+        test_cfg (dict, optional): 测试配置。默认为 None。
+        data_preprocessor (dict, optional): 数据预处理器配置。默认为 None。
+        init_cfg (dict, optional): 权重初始化配置。默认为 None。
     """
 
     def __init__(self,
@@ -52,34 +52,34 @@ class DualPathFRNet(EncoderDecoder3D):
             data_preprocessor=data_preprocessor,
             init_cfg=init_cfg)
 
-        # Geometry encoder: structure-preserving
+        # 几何编码器：结构保持
         self.geometry_encoder = MODELS.build(geometry_encoder)
         
-        # Semantic encoder: context-aware (uses FFE)
+        # 语义编码器：上下文感知（使用FFE）
         self.semantic_encoder = MODELS.build(semantic_encoder)
 
     def extract_feat(self, batch_inputs_dict: dict) -> dict:
-        """Extract features from points using dual-path architecture.
+        """使用双通路架构从点中提取特征。
         
         Args:
-            batch_inputs_dict (dict): Input dictionary containing 'voxels' key.
+            batch_inputs_dict (dict): 包含'voxels'键的输入字典。
             
         Returns:
-            dict: Feature dictionary with:
-                - 'voxel_feats': Fused frustum features
-                - 'point_feats_backbone': Fused point features
+            dict: 特征字典，包含：
+                - 'voxel_feats': 融合后的视锥特征
+                - 'point_feats_backbone': 融合后的点特征
         """
         voxel_dict = batch_inputs_dict['voxels'].copy()
         
-        # Geometry Path: Extract geometric features
+        # 几何路径：提取几何特征
         geo_voxel_dict = voxel_dict.copy()
         geo_voxel_dict = self.geometry_encoder(geo_voxel_dict)
         
-        # Semantic Path: Extract semantic features (uses FFE)
+        # 语义路径：提取语义特征（使用FFE）
         sem_voxel_dict = voxel_dict.copy()
         sem_voxel_dict = self.semantic_encoder(sem_voxel_dict)
         
-        # Combine both paths for backbone
+        # 为骨干网络合并两条路径
         combined_voxel_dict = {
             'geo_voxel_feats': geo_voxel_dict['geo_voxel_feats'],
             'geo_voxel_coors': geo_voxel_dict['geo_voxel_coors'],
@@ -90,7 +90,7 @@ class DualPathFRNet(EncoderDecoder3D):
             'coors': voxel_dict['coors'],
         }
         
-        # Backbone: Cross-Gated Fusion + FPFM
+        # 骨干网络：交叉门控融合 + FPFM
         combined_voxel_dict = self.backbone(combined_voxel_dict)
         
         if self.with_neck:
@@ -100,20 +100,19 @@ class DualPathFRNet(EncoderDecoder3D):
 
     def loss(self, batch_inputs_dict: dict,
              batch_data_samples: SampleList) -> Dict[str, Tensor]:
-        """Calculate losses from a batch of inputs and data samples.
+        """从一批输入和数据样本计算损失。
 
         Args:
-            batch_inputs_dict (dict): Input sample dict which includes 'points'
-                and 'imgs' keys.
-            batch_data_samples (List[:obj:`Det3DDataSample`]): The det3d data
-                samples. It usually includes information such as `metainfo` and
-                `gt_pts_seg`.
+            batch_inputs_dict (dict): 输入样本字典，包含'points'
+                和'imgs'键。
+            batch_data_samples (List[:obj:`Det3DDataSample`]): det3d数据
+                样本。通常包含诸如`metainfo`和`gt_pts_seg`的信息。
 
         Returns:
-            Dict[str, Tensor]: A dictionary of loss components.
+            Dict[str, Tensor]: 损失组件的字典。
         """
 
-        # extract features using backbone
+        # 使用骨干网络提取特征
         voxel_dict = self.extract_feat(batch_inputs_dict)
         losses = dict()
         loss_decode = self._decode_head_forward_train(voxel_dict,
@@ -130,26 +129,23 @@ class DualPathFRNet(EncoderDecoder3D):
                 batch_inputs_dict: dict,
                 batch_data_samples: SampleList,
                 rescale: bool = True) -> SampleList:
-        """Simple test with single scene.
+        """简单测试单个场景。
 
         Args:
-            batch_inputs_dict (dict): Input sample dict which includes 'points'
-                and 'imgs' keys.
-            batch_data_samples (List[:obj:`Det3DDataSample`]): The det3d data
-                samples. It usually includes information such as `metainfo` and
-                `gt_pts_seg`.
-            rescale (bool): Whether transform to original number of points.
-                Will be used for voxelization based segmentors.
-                Defaults to True.
+            batch_inputs_dict (dict): 输入样本字典，包含'points'
+                和'imgs'键。
+            batch_data_samples (List[:obj:`Det3DDataSample`]): det3d数据
+                样本。通常包含诸如`metainfo`和`gt_pts_seg`的信息。
+            rescale (bool): 是否转换回原始点数。
+                将用于基于体素化的分割器。
+                默认为 True。
 
         Returns:
-            List[:obj:`Det3DDataSample`]: Segmentation results of the input
-            points. Each Det3DDataSample usually contains:
+            List[:obj:`Det3DDataSample`]: 输入点的分割结果。
+            每个Det3DDataSample通常包含：
 
-            - ``pred_pts_seg`` (PointData): Prediction of 3D semantic
-              segmentation.
-            - ``pts_seg_logits`` (PointData): Predicted logits of 3D semantic
-              segmentation before normalization.
+            - ``pred_pts_seg`` (PointData): 3D语义分割的预测。
+            - ``pts_seg_logits`` (PointData): 归一化前的3D语义分割预测logits。
         """
         batch_input_metas = []
         for data_sample in batch_data_samples:
@@ -167,17 +163,16 @@ class DualPathFRNet(EncoderDecoder3D):
     def _forward(self,
                  batch_inputs_dict: dict,
                  batch_data_samples: OptSampleList = None) -> dict:
-        """Network forward process.
+        """网络前向传播过程。
 
         Args:
-            batch_inputs_dict (dict): Input sample dict which includes 'points'
-                and 'imgs' keys.
-            batch_data_samples (List[:obj:`Det3DDataSample`]): The det3d data
-                samples. It usually includes information such as `metainfo` and
-                `gt_pts_seg`.
+            batch_inputs_dict (dict): 输入样本字典，包含'points'
+                和'imgs'键。
+            batch_data_samples (List[:obj:`Det3DDataSample`]): det3d数据
+                样本。通常包含诸如`metainfo`和`gt_pts_seg`的信息。
 
         Returns:
-            dict: Forward output of model without any post-processes.
+            dict: 模型的前向输出，不进行任何后处理。
         """
         voxel_dict = self.extract_feat(batch_inputs_dict)
         return self.decode_head.forward(voxel_dict)

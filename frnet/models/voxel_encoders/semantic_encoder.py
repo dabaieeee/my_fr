@@ -8,18 +8,17 @@ from mmdet3d.utils import ConfigType
 
 @MODELS.register_module()
 class SemanticEncoder(nn.Module):
-    """Semantic Encoder for context-aware semantic feature extraction.
+    """语义编码器，用于上下文感知的语义特征提取。
     
-    This encoder uses FFE (Frustum Feature Encoder) to extract semantic
-    context features. It focuses on:
-    - Context understanding
-    - Class relationships
-    - Long-range dependencies
-    - Scene-level semantics
+    该编码器使用FFE（视锥特征编码器）来提取语义上下文特征。它专注于：
+    - 上下文理解
+    - 类别关系
+    - 长程依赖
+    - 场景级语义
     
     Args:
-        ffe_config (dict): Configuration for FrustumFeatureEncoder.
-            This will be used to build the FFE module.
+        ffe_config (dict): FrustumFeatureEncoder的配置。
+            将用于构建FFE模块。
     """
 
     def __init__(self,
@@ -27,27 +26,27 @@ class SemanticEncoder(nn.Module):
         super(SemanticEncoder, self).__init__()
         
         from mmdet3d.registry import MODELS as MODELS_REGISTRY
-        # Build FFE module
+        # 构建FFE模块
         self.ffe = MODELS_REGISTRY.build(ffe_config)
 
     def forward(self, voxel_dict: dict) -> dict:
-        """Forward pass of Semantic Encoder.
+        """语义编码器的前向传播。
         
         Args:
-            voxel_dict (dict): Dictionary containing point cloud data.
+            voxel_dict (dict): 包含点云数据的字典。
                 
         Returns:
-            dict: Updated voxel_dict with semantic features:
-                - 'sem_point_feats': Semantic point features [N, C_sem]
-                - 'sem_voxel_feats': Semantic frustum features [M, C_sem]
-                - 'sem_voxel_coors': Frustum coordinates [M, 4]
+            dict: 更新后的voxel_dict，包含语义特征：
+                - 'sem_point_feats': 语义点特征 [N, C_sem]
+                - 'sem_voxel_feats': 语义视锥特征 [M, C_sem]
+                - 'sem_voxel_coors': 视锥坐标 [M, 4]
         """
-        # Use FFE to extract semantic features
+        # 使用FFE提取语义特征
         voxel_dict = self.ffe(voxel_dict)
         
-        # Rename outputs for semantic path
+        # 为语义路径重命名输出
         if 'point_feats' in voxel_dict:
-            # Get the last point features from FFE
+            # 从FFE获取最后的点特征
             if isinstance(voxel_dict['point_feats'], list):
                 voxel_dict['sem_point_feats'] = voxel_dict['point_feats'][-1]
             else:

@@ -12,26 +12,25 @@ from mmengine.model import BaseModule
 
 @MODELS.register_module()
 class CrossGatedFusion(BaseModule):
-    """Cross-Gated Fusion Module for Geometry-Semantic Feature Fusion.
+    """交叉门控融合模块，用于几何-语义特征融合。
     
-    This module implements a gated fusion mechanism that adaptively combines
-    geometric and semantic features based on their reliability:
-    - g → 1: Trust geometry (nearby, dense regions)
-    - g → 0: Trust semantics (distant, sparse regions)
+    该模块实现了一种门控融合机制，根据可靠性自适应地组合几何和语义特征：
+    - g → 1: 信任几何特征（近距离、密集区域）
+    - g → 0: 信任语义特征（远距离、稀疏区域）
     
-    Formula:
+    公式:
         g = σ(W_g [F_geo; F_sem])
         F_fused = g ⊙ F_geo + (1 - g) ⊙ F_sem
     
     Args:
-        geo_channels (int): Number of channels in geometric features.
-        sem_channels (int): Number of channels in semantic features.
-        out_channels (int): Number of output channels.
-        conv_cfg (dict, optional): Config dict for convolution layer.
-        norm_cfg (dict): Config dict for normalization layer.
-            Defaults to dict(type='BN').
-        act_cfg (dict): Config dict for activation layer.
-            Defaults to dict(type='LeakyReLU').
+        geo_channels (int): 几何特征的通道数。
+        sem_channels (int): 语义特征的通道数。
+        out_channels (int): 输出通道数。
+        conv_cfg (dict, optional): 卷积层的配置字典。
+        norm_cfg (dict): 归一化层的配置字典。
+            默认为 dict(type='BN')。
+        act_cfg (dict): 激活层的配置字典。
+            默认为 dict(type='LeakyReLU')。
     """
 
     def __init__(self,
@@ -51,7 +50,7 @@ class CrossGatedFusion(BaseModule):
         self.norm_cfg = norm_cfg
         self.act_cfg = act_cfg
         
-        # Gate network: computes g from concatenated features
+        # 门控网络：从拼接的特征计算g
         gate_in_channels = geo_channels + sem_channels
         self.gate_conv = nn.Sequential(
             build_conv_layer(
@@ -71,9 +70,9 @@ class CrossGatedFusion(BaseModule):
                 padding=0,
                 bias=False),
             build_norm_layer(norm_cfg, out_channels)[1],
-            nn.Sigmoid())  # Output gate values in [0, 1]
+            nn.Sigmoid())  # 输出门控值在[0, 1]范围内
         
-        # Feature transformation networks
+        # 特征变换网络
         self.geo_transform = nn.Sequential(
             build_conv_layer(
                 conv_cfg,
@@ -96,45 +95,45 @@ class CrossGatedFusion(BaseModule):
             build_norm_layer(norm_cfg, out_channels)[1],
             build_activation_layer(act_cfg))
         
-        # Optional: Cross-attention enhancement
-        self.use_cross_attention = False  # Can be enabled for future enhancement
+        # 可选：交叉注意力增强
+        self.use_cross_attention = False  # 可以在未来启用以增强功能
 
     def forward(self, geo_feats: torch.Tensor, 
                 sem_feats: torch.Tensor) -> torch.Tensor:
-        """Forward pass of Cross-Gated Fusion.
+        """交叉门控融合的前向传播。
         
         Args:
-            geo_feats (Tensor): Geometric features [B, C_geo, H, W] or [N, C_geo].
-            sem_feats (Tensor): Semantic features [B, C_sem, H, W] or [N, C_sem].
+            geo_feats (Tensor): 几何特征 [B, C_geo, H, W] 或 [N, C_geo]。
+            sem_feats (Tensor): 语义特征 [B, C_sem, H, W] 或 [N, C_sem]。
             
         Returns:
-            Tensor: Fused features [B, C_out, H, W] or [N, C_out].
+            Tensor: 融合后的特征 [B, C_out, H, W] 或 [N, C_out]。
         """
-        # Handle both 2D (range image) and 1D (point) features
+        # 处理2D（距离图像）和1D（点）特征
         is_2d = geo_feats.dim() == 4
         
         if is_2d:
-            # Range image features: [B, C, H, W]
-            # Concatenate along channel dimension
+            # 距离图像特征: [B, C, H, W]
+            # 沿通道维度拼接
             concat_feats = torch.cat([geo_feats, sem_feats], dim=1)
             
-            # Compute gate
+            # 计算门控值
             gate = self.gate_conv(concat_feats)  # [B, C_out, H, W]
             
-            # Transform features
+            # 变换特征
             geo_transformed = self.geo_transform(geo_feats)  # [B, C_out, H, W]
             sem_transformed = self.sem_transform(sem_feats)  # [B, C_out, H, W]
             
-            # Gated fusion
+            # 门控融合
             fused_feats = gate * geo_transformed + (1 - gate) * sem_transformed
             
         else:
-            # Point features: [N, C]
-            # For point features, use pre-built MLP layers
-            # Concatenate along feature dimension
+            # 点特征: [N, C]
+            # 对于点特征，使用预构建的MLP层
+            # 沿特征维度拼接
             concat_feats = torch.cat([geo_feats, sem_feats], dim=1)  # [N, C_geo + C_sem]
             
-            # Build MLP layers for point features (if not exists)
+            # 为点特征构建MLP层（如果不存在）
             if not hasattr(self, 'gate_mlp'):
                 gate_in_channels = self.geo_channels + self.sem_channels
                 self.gate_mlp = nn.Sequential(
@@ -157,14 +156,14 @@ class CrossGatedFusion(BaseModule):
                     build_norm_layer(self.norm_cfg, self.out_channels)[1],
                     build_activation_layer(self.act_cfg))
             
-            # Compute gate
+            # 计算门控值
             gate = self.gate_mlp(concat_feats)  # [N, C_out]
             
-            # Transform features
+            # 变换特征
             geo_transformed = self.geo_transform_mlp(geo_feats)  # [N, C_out]
             sem_transformed = self.sem_transform_mlp(sem_feats)  # [N, C_out]
             
-            # Gated fusion
+            # 门控融合
             fused_feats = gate * geo_transformed + (1 - gate) * sem_transformed
         
         return fused_feats

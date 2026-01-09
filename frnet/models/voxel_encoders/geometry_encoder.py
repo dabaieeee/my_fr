@@ -10,30 +10,29 @@ from mmdet3d.utils import ConfigType
 
 @MODELS.register_module()
 class GeometryEncoder(nn.Module):
-    """Geometry Encoder for structure-preserving geometric feature extraction.
+    """几何编码器，用于结构保持的几何特征提取。
     
-    This encoder focuses on extracting local geometric features such as:
-    - Point coordinates (xyz)
-    - Surface normals
-    - Curvature information
-    - Local plane confidence
+    该编码器专注于提取局部几何特征，例如：
+    - 点坐标 (xyz)
+    - 表面法向量
+    - 曲率信息
+    - 局部平面置信度
     
-    It uses small receptive fields to preserve geometric structure and
-    avoid semantic contamination.
+    使用小感受野以保持几何结构并避免语义污染。
     
     Args:
-        in_channels (int): Number of input features (xyz + optional features).
-            Defaults to 3.
-        feat_channels (Sequence[int]): Number of features in each MLP layer.
-            Defaults to [64, 128, 128].
-        with_normals (bool): Whether to compute and use surface normals.
-            Defaults to True.
-        with_curvature (bool): Whether to compute curvature features.
-            Defaults to True.
-        norm_cfg (dict): Config dict of normalization layers.
-            Defaults to dict(type='BN1d', eps=1e-5, momentum=0.1).
-        k_neighbors (int): Number of neighbors for normal/curvature computation.
-            Defaults to 10.
+        in_channels (int): 输入特征数量 (xyz + 可选特征)。
+            默认为 3。
+        feat_channels (Sequence[int]): 每个MLP层的特征数量。
+            默认为 [64, 128, 128]。
+        with_normals (bool): 是否计算和使用表面法向量。
+            默认为 True。
+        with_curvature (bool): 是否计算曲率特征。
+            默认为 True。
+        norm_cfg (dict): 归一化层的配置字典。
+            默认为 dict(type='BN1d', eps=1e-5, momentum=0.1)。
+        k_neighbors (int): 用于法向量/曲率计算的邻居点数量。
+            默认为 10。
     """
 
     def __init__(self,
@@ -52,14 +51,14 @@ class GeometryEncoder(nn.Module):
         self._with_curvature = with_curvature
         self.k_neighbors = k_neighbors
 
-        # Calculate actual input channels after adding geometric features
+        # 计算添加几何特征后的实际输入通道数
         actual_in_channels = in_channels
         if with_normals:
-            actual_in_channels += 3  # normal vector (nx, ny, nz)
+            actual_in_channels += 3  # 法向量 (nx, ny, nz)
         if with_curvature:
-            actual_in_channels += 3  # curvature features (linearity, planarity, sphericity)
+            actual_in_channels += 3  # 曲率特征 (线性度, 平面度, 球面度)
 
-        # Build MLP layers for geometric feature extraction
+        # 构建用于几何特征提取的MLP层
         feat_channels = [actual_in_channels] + list(feat_channels)
         geo_layers = []
         for i in range(len(feat_channels) - 1):
@@ -79,53 +78,53 @@ class GeometryEncoder(nn.Module):
     def compute_normals(self, points: torch.Tensor, 
                        coors: torch.Tensor, 
                        k: int = 10) -> torch.Tensor:
-        """Compute surface normals using local neighborhood.
+        """使用局部邻域计算表面法向量。
         
-        Uses PyTorch-based k-NN search for efficiency.
+        使用基于PyTorch的k-NN搜索以提高效率。
         
         Args:
-            points (Tensor): Point coordinates [N, 3].
-            coors (Tensor): Frustum coordinates [N, 4] (batch, y, x, z).
-            k (int): Number of neighbors for normal computation.
+            points (Tensor): 点坐标 [N, 3]。
+            coors (Tensor): 视锥坐标 [N, 4] (batch, y, x, z)。
+            k (int): 用于法向量计算的邻居点数量。
             
         Returns:
-            Tensor: Normal vectors [N, 3].
+            Tensor: 法向量 [N, 3]。
         """
         device = points.device
         N = points.shape[0]
-        k = min(k + 1, N)  # +1 to exclude self
+        k = min(k + 1, N)  # +1 以排除自身
         
-        # Compute pairwise distances
+        # 计算成对距离
         dists = torch.cdist(points, points)  # [N, N]
         
-        # Get k nearest neighbors (including self)
+        # 获取k个最近邻（包括自身）
         _, indices = torch.topk(dists, k, dim=1, largest=False)  # [N, k]
         
         normals = torch.zeros_like(points)
         for i in range(N):
             if k > 1:
-                # Get neighbors (excluding the point itself)
-                neighbor_indices = indices[i, 1:]  # Skip first (self)
+                # 获取邻居点（排除自身）
+                neighbor_indices = indices[i, 1:]  # 跳过第一个（自身）
                 neighbor_points = points[neighbor_indices]  # [k-1, 3]
                 center = points[i:i+1]  # [1, 3]
                 
                 if len(neighbor_points) > 0:
-                    # Compute covariance matrix
+                    # 计算协方差矩阵
                     centered = neighbor_points - center  # [k-1, 3]
                     cov = torch.mm(centered.t(), centered) / len(centered)  # [3, 3]
                     
-                    # Eigenvalue decomposition
+                    # 特征值分解
                     try:
                         eigenvals, eigenvecs = torch.linalg.eigh(cov)
-                        # Normal is the eigenvector with smallest eigenvalue
+                        # 法向量是特征值最小的特征向量
                         normal = eigenvecs[:, 0]
-                        # Ensure consistent orientation (pointing towards origin)
+                        # 确保方向一致（指向原点）
                         center_vec = center.squeeze()
                         if torch.dot(normal, center_vec) > 0:
                             normal = -normal
                         normals[i] = normal
                     except:
-                        # Fallback: use simple normal estimation
+                        # 备用方案：使用简单的法向量估计
                         if len(neighbor_points) >= 2:
                             v1 = neighbor_points[0] - center_vec
                             if len(neighbor_points) >= 3:
@@ -142,32 +141,32 @@ class GeometryEncoder(nn.Module):
     def compute_curvature(self, points: torch.Tensor,
                          coors: torch.Tensor,
                          k: int = 10) -> torch.Tensor:
-        """Compute curvature features (linearity, planarity, sphericity).
+        """计算曲率特征（线性度、平面度、球面度）。
         
-        Uses PyTorch-based k-NN search for efficiency.
+        使用基于PyTorch的k-NN搜索以提高效率。
         
         Args:
-            points (Tensor): Point coordinates [N, 3].
-            coors (Tensor): Frustum coordinates [N, 4].
-            k (int): Number of neighbors for curvature computation.
+            points (Tensor): 点坐标 [N, 3]。
+            coors (Tensor): 视锥坐标 [N, 4]。
+            k (int): 用于曲率计算的邻居点数量。
             
         Returns:
-            Tensor: Curvature features [N, 3] (linearity, planarity, sphericity).
+            Tensor: 曲率特征 [N, 3] (线性度, 平面度, 球面度)。
         """
         device = points.device
         N = points.shape[0]
-        k = min(k + 1, N)  # +1 to exclude self
+        k = min(k + 1, N)  # +1 以排除自身
         
-        # Compute pairwise distances
+        # 计算成对距离
         dists = torch.cdist(points, points)  # [N, N]
         
-        # Get k nearest neighbors (including self)
+        # 获取k个最近邻（包括自身）
         _, indices = torch.topk(dists, k, dim=1, largest=False)  # [N, k]
         
         curvature_features = torch.zeros((N, 3), device=device)
         for i in range(N):
             if k > 1:
-                neighbor_indices = indices[i, 1:]  # Skip first (self)
+                neighbor_indices = indices[i, 1:]  # 跳过第一个（自身）
                 neighbor_points = points[neighbor_indices]
                 center = points[i:i+1]
                 
@@ -179,16 +178,16 @@ class GeometryEncoder(nn.Module):
                         eigenvals = torch.abs(eigenvals)
                         eigenvals = torch.sort(eigenvals, descending=True)[0]
                         
-                        # Normalize eigenvalues
+                        # 归一化特征值
                         lambda_sum = eigenvals.sum()
                         if lambda_sum > 1e-6:
                             eigenvals = eigenvals / lambda_sum
                             
-                            # Linearity: (lambda1 - lambda2) / lambda1
+                            # 线性度: (lambda1 - lambda2) / lambda1
                             linearity = (eigenvals[0] - eigenvals[1]) / (eigenvals[0] + 1e-6)
-                            # Planarity: (lambda2 - lambda3) / lambda1
+                            # 平面度: (lambda2 - lambda3) / lambda1
                             planarity = (eigenvals[1] - eigenvals[2]) / (eigenvals[0] + 1e-6)
-                            # Sphericity: lambda3 / lambda1
+                            # 球面度: lambda3 / lambda1
                             sphericity = eigenvals[2] / (eigenvals[0] + 1e-6)
                             
                             curvature_features[i] = torch.stack([
@@ -200,51 +199,51 @@ class GeometryEncoder(nn.Module):
         return curvature_features
 
     def forward(self, voxel_dict: dict) -> dict:
-        """Forward pass of Geometry Encoder.
+        """几何编码器的前向传播。
         
         Args:
-            voxel_dict (dict): Dictionary containing:
-                - 'voxels': Point features [N, C]
-                - 'coors': Frustum coordinates [N, 4]
+            voxel_dict (dict): 包含以下键的字典：
+                - 'voxels': 点特征 [N, C]
+                - 'coors': 视锥坐标 [N, 4]
                 
         Returns:
-            dict: Updated voxel_dict with:
-                - 'geo_point_feats': Geometric point features [N, C_geo]
-                - 'geo_voxel_feats': Geometric frustum features [M, C_geo]
-                - 'geo_voxel_coors': Frustum coordinates [M, 4]
+            dict: 更新后的voxel_dict，包含：
+                - 'geo_point_feats': 几何点特征 [N, C_geo]
+                - 'geo_voxel_feats': 几何视锥特征 [M, C_geo]
+                - 'geo_voxel_coors': 视锥坐标 [M, 4]
         """
         features = voxel_dict['voxels']
         coors = voxel_dict['coors']
         
-        # Extract xyz coordinates (first 3 channels)
+        # 提取xyz坐标（前3个通道）
         xyz = features[:, :3]
         
-        # Build geometric features
+        # 构建几何特征
         geo_features = [xyz]
         
-        # Add normals if enabled
+        # 如果启用，添加法向量
         if self._with_normals:
             normals = self.compute_normals(xyz, coors, k=self.k_neighbors)
             geo_features.append(normals)
         
-        # Add curvature if enabled
+        # 如果启用，添加曲率
         if self._with_curvature:
             curvature = self.compute_curvature(xyz, coors, k=self.k_neighbors)
             geo_features.append(curvature)
         
-        # Concatenate all geometric features
+        # 拼接所有几何特征
         geo_input = torch.cat(geo_features, dim=-1)
         
-        # Extract geometric features through MLP layers
+        # 通过MLP层提取几何特征
         geo_feats = geo_input
         for geo_layer in self.geo_layers:
             geo_feats = geo_layer(geo_feats)
         
-        # Aggregate to frustum level (max pooling to preserve structure)
+        # 聚合到视锥级别（使用最大池化以保持结构）
         voxel_coors, inverse_map = torch.unique(
             coors, return_inverse=True, dim=0)
         
-        # Use max pooling to preserve geometric structure
+        # 使用最大池化以保持几何结构
         geo_voxel_feats = torch_scatter.scatter_max(
             geo_feats.float(), inverse_map, dim=0)[0].to(geo_feats.dtype)
         

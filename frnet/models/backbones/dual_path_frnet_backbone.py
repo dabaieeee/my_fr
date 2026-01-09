@@ -17,35 +17,34 @@ from .cross_gated_fusion import CrossGatedFusion
 
 @MODELS.register_module()
 class DualPathFRNetBackbone(BaseModule):
-    """Dual-Path FRNet Backbone with Geometry-Semantic Decoupling.
+    """双通路FRNet骨干网络，具有几何-语义解耦。
     
-    This backbone implements a dual-path architecture:
-    1. Geometry Path: Extracts structure-preserving geometric features
-    2. Semantic Path: Extracts context-aware semantic features using FFE and FPFM
-    3. Cross-Gated Fusion: Adaptively fuses geometry and semantic features
+    该骨干网络实现了双通路架构：
+    1. 几何路径：提取结构保持的几何特征
+    2. 语义路径：使用FFE和FPFM提取上下文感知的语义特征
+    3. 交叉门控融合：自适应地融合几何和语义特征
     
-    The FPFM (Frustum-Point Fusion Module) is preserved and operates on
-    the semantic path to maintain scene consistency.
+    FPFM（视锥-点融合模块）被保留并在语义路径上操作以保持场景一致性。
     
     Args:
-        geo_channels (int): Number of channels from geometry encoder.
-        sem_channels (int): Number of channels from semantic encoder.
-        output_shape (Sequence[int]): Output shape of range image [H, W].
-        depth (int): Depth of ResNet backbone (18 or 34).
-        stem_channels (int): Number of channels in stem layer.
-        num_stages (int): Number of ResNet stages.
-        out_channels (Sequence[int]): Output channels for each stage.
-        strides (Sequence[int]): Strides for each stage.
-        dilations (Sequence[int]): Dilations for each stage.
-        fuse_channels (Sequence[int]): Channels for fusion layers.
-        conv_cfg (dict, optional): Config for convolution layers.
-        norm_cfg (dict): Config for normalization layers.
-        point_norm_cfg (dict): Config for point normalization layers.
-        act_cfg (dict): Config for activation layers.
-        use_cross_gated_fusion (bool): Whether to use cross-gated fusion.
-            Defaults to True.
-        fusion_channels (int): Number of channels after fusion.
-            Defaults to None (uses stem_channels).
+        geo_channels (int): 来自几何编码器的通道数。
+        sem_channels (int): 来自语义编码器的通道数。
+        output_shape (Sequence[int]): 距离图像的输出形状 [H, W]。
+        depth (int): ResNet骨干网络的深度（18或34）。
+        stem_channels (int): stem层的通道数。
+        num_stages (int): ResNet阶段数。
+        out_channels (Sequence[int]): 每个阶段的输出通道数。
+        strides (Sequence[int]): 每个阶段的步长。
+        dilations (Sequence[int]): 每个阶段的膨胀率。
+        fuse_channels (Sequence[int]): 融合层的通道数。
+        conv_cfg (dict, optional): 卷积层的配置。
+        norm_cfg (dict): 归一化层的配置。
+        point_norm_cfg (dict): 点归一化层的配置。
+        act_cfg (dict): 激活层的配置。
+        use_cross_gated_fusion (bool): 是否使用交叉门控融合。
+            默认为 True。
+        fusion_channels (int): 融合后的通道数。
+            默认为 None（使用stem_channels）。
     """
 
     arch_settings = {
@@ -91,13 +90,13 @@ class DualPathFRNetBackbone(BaseModule):
         self.act_cfg = act_cfg
         self.use_cross_gated_fusion = use_cross_gated_fusion
         
-        # Geometry path: small receptive field, structure-preserving
+        # 几何路径：小感受野，结构保持
         self.geo_stem = self._make_stem_layer(geo_channels, stem_channels)
         
-        # Semantic path: uses FFE output, context-aware
+        # 语义路径：使用FFE输出，上下文感知
         self.sem_stem = self._make_stem_layer(sem_channels, stem_channels)
         
-        # Cross-Gated Fusion at stem level
+        # 在stem级别的交叉门控融合
         if use_cross_gated_fusion:
             fusion_ch = fusion_channels if fusion_channels is not None else stem_channels
             self.cross_gated_fusion = CrossGatedFusion(
@@ -109,22 +108,22 @@ class DualPathFRNetBackbone(BaseModule):
                 act_cfg=act_cfg)
             fused_channels = fusion_ch
         else:
-            # Simple concatenation if fusion is disabled
+            # 如果禁用融合，使用简单拼接
             self.fusion_stem = self._make_fusion_layer(
                 stem_channels * 2, stem_channels)
             fused_channels = stem_channels
         
-        # Point feature stems
+        # 点特征stem层
         self.geo_point_stem = self._make_point_layer(geo_channels, stem_channels)
         self.sem_point_stem = self._make_point_layer(sem_channels, stem_channels)
         
-        # Fused point stem (after cross-gated fusion at point level)
+        # 融合后的点stem层（在点级别的交叉门控融合之后）
         if use_cross_gated_fusion:
             self.point_cross_gated_fusion = CrossGatedFusion(
                 geo_channels=stem_channels,
                 sem_channels=stem_channels,
                 out_channels=fusion_ch,
-                conv_cfg=None,  # Use MLP for point features
+                conv_cfg=None,  # 对点特征使用MLP
                 norm_cfg=point_norm_cfg,
                 act_cfg=act_cfg)
             fused_point_channels = fusion_ch
@@ -133,7 +132,7 @@ class DualPathFRNetBackbone(BaseModule):
                 stem_channels * 2, stem_channels)
             fused_point_channels = stem_channels
         
-        # Stem-level FPFM fusion layers
+        # Stem级别的FPFM融合层
         self.stem_point_fusion = self._make_gated_point_fusion_layer(
             fused_channels + fused_point_channels, fused_point_channels)
         self.stem_pixel_fusion = self._make_gated_fusion_layer(
@@ -141,9 +140,9 @@ class DualPathFRNetBackbone(BaseModule):
 
         inplanes = fused_channels
         self.res_layers = []
-        # FPFM layers (operate on semantic path, then fuse with geometry)
-        self.point_fusion_layers = nn.ModuleList()  # Frustum-to-Point fusion
-        self.pixel_fusion_layers = nn.ModuleList()  # Point-to-Frustum fusion
+        # FPFM层（在语义路径上操作，然后与几何特征融合）
+        self.point_fusion_layers = nn.ModuleList()  # 视锥到点的融合
+        self.pixel_fusion_layers = nn.ModuleList()  # 点到视锥的融合
         self.attention_layers = nn.ModuleList()
         self.strides = []
         overall_stride = 1
@@ -166,15 +165,15 @@ class DualPathFRNetBackbone(BaseModule):
                 norm_cfg=norm_cfg,
                 act_cfg=act_cfg)
             
-            # FPFM: Frustum-to-Point fusion (on semantic path)
+            # FPFM: 视锥到点的融合（在语义路径上）
             self.point_fusion_layers.append(
                 self._make_gated_point_fusion_layer(inplanes + planes, planes))
             
-            # FPFM: Point-to-Frustum fusion
+            # FPFM: 点到视锥的融合
             self.pixel_fusion_layers.append(
                 self._make_gated_fusion_layer(planes * 2, planes))
             
-            # Attention module
+            # 注意力模块
             self.attention_layers.append(self._make_attention_layer(planes))
             
             inplanes = planes
@@ -182,7 +181,7 @@ class DualPathFRNetBackbone(BaseModule):
             self.add_module(layer_name, res_layer)
             self.res_layers.append(layer_name)
 
-        # Multi-scale feature fusion
+        # 多尺度特征融合
         in_channels = fused_channels + sum(out_channels)
         self.fuse_layers = []
         self.point_fuse_layers = []
@@ -257,7 +256,7 @@ class DualPathFRNetBackbone(BaseModule):
 
     def _make_gated_fusion_layer(self, in_channels: int,
                                  out_channels: int) -> nn.Module:
-        """Create gated fusion layer for pixel features."""
+        """为像素特征创建门控融合层。"""
         return nn.ModuleDict({
             'fusion': nn.Sequential(
                 build_conv_layer(
@@ -283,7 +282,7 @@ class DualPathFRNetBackbone(BaseModule):
 
     def _make_gated_point_fusion_layer(self, in_channels: int,
                                        out_channels: int) -> nn.Module:
-        """Create gated fusion layer for point features."""
+        """为点特征创建门控融合层。"""
         return nn.ModuleDict({
             'fusion': nn.Sequential(
                 nn.Linear(in_channels, out_channels, bias=False),
@@ -363,22 +362,22 @@ class DualPathFRNetBackbone(BaseModule):
         return nn.Sequential(*layers)
 
     def forward(self, voxel_dict: dict) -> dict:
-        """Forward pass of Dual-Path FRNet Backbone.
+        """双通路FRNet骨干网络的前向传播。
         
         Args:
-            voxel_dict (dict): Dictionary containing:
-                - 'geo_voxel_feats': Geometric frustum features [M, C_geo]
-                - 'geo_voxel_coors': Geometric frustum coordinates [M, 4]
-                - 'geo_point_feats': Geometric point features [N, C_geo]
-                - 'sem_voxel_feats': Semantic frustum features [M, C_sem]
-                - 'sem_voxel_coors': Semantic frustum coordinates [M, 4]
-                - 'sem_point_feats': Semantic point features [N, C_sem]
-                - 'coors': Point coordinates [N, 3]
+            voxel_dict (dict): 包含以下键的字典：
+                - 'geo_voxel_feats': 几何视锥特征 [M, C_geo]
+                - 'geo_voxel_coors': 几何视锥坐标 [M, 4]
+                - 'geo_point_feats': 几何点特征 [N, C_geo]
+                - 'sem_voxel_feats': 语义视锥特征 [M, C_sem]
+                - 'sem_voxel_coors': 语义视锥坐标 [M, 4]
+                - 'sem_point_feats': 语义点特征 [N, C_sem]
+                - 'coors': 点坐标 [N, 3]
                 
         Returns:
-            dict: Updated voxel_dict with backbone features.
+            dict: 更新后的voxel_dict，包含骨干网络特征。
         """
-        # Extract inputs
+        # 提取输入
         geo_voxel_feats = voxel_dict['geo_voxel_feats']
         geo_voxel_coors = voxel_dict['geo_voxel_coors']
         geo_point_feats = voxel_dict['geo_point_feats']
@@ -390,32 +389,32 @@ class DualPathFRNetBackbone(BaseModule):
         pts_coors = voxel_dict['coors']
         batch_size = pts_coors[-1, 0].item() + 1
 
-        # Geometry Path: Convert to range image and extract features
+        # 几何路径：转换为距离图像并提取特征
         geo_pixel = self.frustum2pixel(
             geo_voxel_feats, geo_voxel_coors, batch_size, stride=1)
         geo_pixel = self.geo_stem(geo_pixel)  # [B, C, H, W]
         
-        # Semantic Path: Convert to range image and extract features
+        # 语义路径：转换为距离图像并提取特征
         sem_pixel = self.frustum2pixel(
             sem_voxel_feats, sem_voxel_coors, batch_size, stride=1)
         sem_pixel = self.sem_stem(sem_pixel)  # [B, C, H, W]
         
-        # Cross-Gated Fusion at pixel level
+        # 在像素级别的交叉门控融合
         if self.use_cross_gated_fusion:
             fused_pixel = self.cross_gated_fusion(geo_pixel, sem_pixel)
         else:
             fused_pixel = torch.cat([geo_pixel, sem_pixel], dim=1)
             fused_pixel = self.fusion_stem(fused_pixel)
         
-        # Point-level fusion
-        # Map fused pixel features to points
+        # 点级别融合
+        # 将融合后的像素特征映射到点
         map_point_feats = self.pixel2point(fused_pixel, pts_coors, stride=1)
         
-        # Process point features from both paths
+        # 处理来自两条路径的点特征
         geo_point_processed = self.geo_point_stem(geo_point_feats)
         sem_point_processed = self.sem_point_stem(sem_point_feats)
         
-        # Cross-Gated Fusion at point level
+        # 在点级别的交叉门控融合
         if self.use_cross_gated_fusion:
             fused_point_feats = self.point_cross_gated_fusion(
                 geo_point_processed, sem_point_processed)
@@ -424,14 +423,14 @@ class DualPathFRNetBackbone(BaseModule):
                 [geo_point_processed, sem_point_processed], dim=1)
             fused_point_feats = self.point_fusion_stem(fused_point_feats)
         
-        # FPFM: Frustum-to-Point fusion (eq.4) - Initial fusion at stem level
+        # FPFM: 视锥到点的融合 (eq.4) - 在stem级别的初始融合
         fusion_point_feats = torch.cat(
             [map_point_feats, fused_point_feats], dim=1)
         point_fused = self.stem_point_fusion['fusion'](fusion_point_feats)
         point_gate = self.stem_point_fusion['gate'](fusion_point_feats)
         point_feats = point_fused * point_gate + fused_point_feats
         
-        # FPFM: Point-to-Frustum fusion (eq.5) - Initial fusion at stem level
+        # FPFM: 点到视锥的融合 (eq.5) - 在stem级别的初始融合
         stride_voxel_coors, frustum_feats, _ = self.point2frustum(
             point_feats, pts_coors, stride=1)
         pixel_feats = self.frustum2pixel(
@@ -444,12 +443,12 @@ class DualPathFRNetBackbone(BaseModule):
         outs = [x]
         out_points = [point_feats]
         
-        # Process through ResNet stages with FPFM
+        # 通过ResNet阶段和FPFM处理
         for i, layer_name in enumerate(self.res_layers):
             res_layer = getattr(self, layer_name)
             x = res_layer(x)
 
-            # FPFM: Frustum-to-Point fusion
+            # FPFM: 视锥到点的融合
             map_point_feats = self.pixel2point(
                 x, pts_coors, stride=self.strides[i])
             fusion_point_feats = torch.cat([map_point_feats, point_feats], dim=1)
@@ -459,7 +458,7 @@ class DualPathFRNetBackbone(BaseModule):
             point_gate = gated_point_fusion['gate'](fusion_point_feats)
             point_feats = point_fused * point_gate + point_feats
 
-            # FPFM: Point-to-Frustum fusion
+            # FPFM: 点到视锥的融合
             stride_voxel_coors, frustum_feats, _ = self.point2frustum(
                 point_feats, pts_coors, stride=self.strides[i])
             pixel_feats = self.frustum2pixel(
@@ -472,14 +471,14 @@ class DualPathFRNetBackbone(BaseModule):
             fuse_gate = gated_pixel_fusion['gate'](fusion_pixel_feats)
             fuse_out = fuse_out * fuse_gate
             
-            # Residual-attentive fusion
+            # 残差注意力融合
             attention_map = self.attention_layers[i](fuse_out)
             x = fuse_out * attention_map + x
 
             outs.append(x)
             out_points.append(point_feats)
 
-        # Multi-scale feature fusion
+        # 多尺度特征融合
         for i in range(len(outs)):
             if outs[i].shape != outs[0].shape:
                 outs[i] = F.interpolate(
@@ -507,7 +506,7 @@ class DualPathFRNetBackbone(BaseModule):
                      coors: Tensor,
                      batch_size: int,
                      stride: int = 1) -> Tensor:
-        """Convert frustum features to range image (pixel)."""
+        """将视锥特征转换为距离图像（像素）。"""
         nx = self.nx // stride
         ny = self.ny // stride
         pixel_features = torch.zeros(
@@ -522,7 +521,7 @@ class DualPathFRNetBackbone(BaseModule):
                     pixel_features: Tensor,
                     coors: Tensor,
                     stride: int = 1) -> Tensor:
-        """Convert range image (pixel) to point features."""
+        """将距离图像（像素）转换为点特征。"""
         pixel_features = pixel_features.permute(0, 2, 3, 1).contiguous()
         point_feats = pixel_features[coors[:, 0], coors[:, 1] // stride,
                                      coors[:, 2] // stride]
@@ -532,7 +531,7 @@ class DualPathFRNetBackbone(BaseModule):
                      point_features: Tensor,
                      pts_coors: Tensor,
                      stride: int = 1) -> Tuple[Tensor, Tensor, Tensor]:
-        """Convert point features to frustum features."""
+        """将点特征转换为视锥特征。"""
         coors = pts_coors.clone()
         coors[:, 1] = pts_coors[:, 1] // stride
         coors[:, 2] = pts_coors[:, 2] // stride
