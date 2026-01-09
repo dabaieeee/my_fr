@@ -3,7 +3,7 @@
 # i.e. we consider the unlabeled class as the last one, which is different
 # from the original implementation of some methods e.g. Cylinder3D.
 dataset_type = 'NuScenesSegDataset'
-data_root = 'data/nuscenes/'
+data_root = '/mnt/data1/public_dataset/nuScenes/v1.0/'
 class_names = [
     'barrier', 'bicycle', 'bus', 'car', 'construction_vehicle', 'motorcycle',
     'pedestrian', 'traffic_cone', 'trailer', 'truck', 'driveable_surface',
@@ -227,8 +227,8 @@ tta_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=4,
-    num_workers=4,
+    batch_size=8,
+    num_workers=8,
     persistent_workers=True,
     sampler=dict(type='InfiniteSampler', shuffle=True),
     dataset=dict(
@@ -242,8 +242,8 @@ train_dataloader = dict(
         ignore_index=16,
         backend_args=backend_args))
 val_dataloader = dict(
-    batch_size=1,
-    num_workers=1,
+    batch_size=4,
+    num_workers=4,
     persistent_workers=True,
     drop_last=False,
     sampler=dict(type='DefaultSampler', shuffle=False),
